@@ -8,10 +8,10 @@ Homepage: https://github.com/vir/yate-extra
 
 Package: yate-extra-g726codec
 Architecture: any
-Depends: libyate (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: G.726-32 codec stolen from asterisk
 
 Package: yate-extra-sipdate
 Architecture: any
-Depends: libyate (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Add "Date" header to SIP REGISTER replyes (required for some ip phones).

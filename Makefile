@@ -21,7 +21,7 @@ clean:
 
 install: $(MODULES)
 	install -d $(DESTDIR)$(SHAREDIR)
-	install -m755 $^ $(DESTDIR)$(SHAREDIR)
+	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(SHAREDIR); done
 
 deb: debian/control
 	dpkg-buildpackage -uc -us -rfakeroot ${DPKGBPFLAGS}
@@ -34,7 +34,7 @@ debian/control: Makefile $(SOURCES)
 		echo "" >> $@; \
 		echo "Package: $${PKG}" >> $@; \
 		echo 'Architecture: any' >> $@; \
-		echo 'Depends: libyate (= $${binary:Version}), $${shlibs:Depends}, $${misc:Depends}' >> $@; \
+		echo 'Depends: $${shlibs:Depends}, $${misc:Depends}' >> $@; \
 		echo "Description: $${DESCR}" >> $@; \
 		echo "debian/tmp$(SHAREDIR)/$$m.yate" > debian/$${PKG}.install; \
 	done
