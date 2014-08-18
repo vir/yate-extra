@@ -8,6 +8,7 @@
 *.so
 *.dylib
 *.dll
+*.yate
 
 # Compiled Static libraries
 *.lai
@@ -19,3 +20,8 @@
 *.exe
 *.out
 *.app
+
+# misc
+*-stamp
+debian/*.log
+

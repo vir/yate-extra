@@ -13,7 +13,7 @@ SHAREDIR := `yate-config --share`
 .PHONY: clean deb
 
 .cpp.yate: $<
-	g++ -Wall -O2 ${MOREFLAGS} `yate-config --c-all` `yate-config --ld-all` -o $@ $^
+	g++ -Wall -O2 ${MOREFLAGS} $(DEBUG) `yate-config --c-all` `yate-config --ld-all` -o $@ $^
 
 all: $(MODULES)
 clean:
@@ -23,8 +23,24 @@ install: $(MODULES)
 	install -d $(DESTDIR)$(SHAREDIR)
 	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(SHAREDIR); done
 
+debug:
+	$(MAKE) all DEBUG=-g3 MODSTRIP=
+
+ddebug:
+	$(MAKE) all DEBUG='-g3 -DDEBUG' MODSTRIP=
+
+xdebug:
+	$(MAKE) all DEBUG='-g3 -DXDEBUG' MODSTRIP=
+
+ndebug:
+	$(MAKE) all DEBUG='-g0 -DNDEBUG'
+
+
 deb: debian/control
 	dpkg-buildpackage -uc -us -rfakeroot ${DPKGBPFLAGS}
+
+debsrc: debian/control
+	dpkg-buildpackage -S -uc -us -rfakeroot ${DPKGBPFLAGS}
 
 debian/control: Makefile $(SOURCES)
 	echo -e '/^$$/,$$d\nw' | ed $@; \
@@ -39,4 +55,6 @@ debian/control: Makefile $(SOURCES)
 		echo "debian/tmp$(SHAREDIR)/$$m.yate" > debian/$${PKG}.install; \
 	done
 
+sysvipc.yate: sysvipc.cpp
+	g++ -Wall -O2 ${MOREFLAGS} $(DEBUG) -lyatescript `yate-config --c-all` `yate-config --ld-all` -o $@ $^
 
