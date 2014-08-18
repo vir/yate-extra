@@ -1,0 +1,17 @@
+Source: yate-extra
+Section: comm
+Priority: optional
+Maintainer: Vasily i. Redkin <vir@ctm.ru>
+Build-Depends: build-essential, debhelper (>= 7), pkg-config, yate-dev
+Standards-Version: 3.7.3
+Homepage: https://github.com/vir/yate-extra
+
+Package: yate-extra-g726codec
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: G.726-32 codec stolen from asterisk
+
+Package: yate-extra-sipdate
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Add "Date" header to SIP REGISTER replyes (required for some ip phones).
