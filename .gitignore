@@ -24,4 +24,7 @@
 # misc
 *-stamp
 debian/*.log
+debian/*/
+debian/*.substvars
+
 
