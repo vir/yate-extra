@@ -1,5 +1,6 @@
 SOURCES := $(wildcard *.cpp)
 MODULES := $(patsubst %.cpp,%.yate, $(SOURCES))
+CONFIGS := $(wildcard $(patsubst %.cpp,%.conf, $(SOURCES)))
 
 YATEDIR?=../yate3.git
 ifneq ($(wildcard ${YATEDIR}),)
@@ -8,6 +9,7 @@ ifneq ($(wildcard ${YATEDIR}),)
 	PATH := ${YATEDIR}:$(PATH)
 endif
 SHAREDIR := `yate-config --share`
+CONFDIR := `yate-config --config`
 
 .SUFFIXES: .yate
 .PHONY: clean deb
@@ -19,9 +21,10 @@ all: $(MODULES)
 clean:
 	rm -f $(patsubst %.cpp,%.yate,$(wildcard *.cpp))
 
-install: $(MODULES)
-	install -d $(DESTDIR)$(SHAREDIR)
+install: $(MODULES) $(CONFIGS)
+	install -d $(DESTDIR)$(SHAREDIR) $(DESTDIR)$(CONFDIR)
 	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(SHAREDIR); done
+	for m in $(CONFIGS); do install -m755 $$m $(DESTDIR)$(CONFDIR); done
 
 debug:
 	$(MAKE) all DEBUG=-g3 MODSTRIP=
@@ -53,6 +56,10 @@ debian/control: Makefile $(SOURCES)
 		echo 'Depends: $${shlibs:Depends}, $${misc:Depends}' >> $@; \
 		echo "Description: $${DESCR}" >> $@; \
 		echo "debian/tmp$(SHAREDIR)/$$m.yate" > debian/$${PKG}.install; \
+	done
+	for m in $(CONFIGS:.conf=); do \
+		PKG="yate-extra-$$m"; \
+		echo "debian/tmp$(CONFDIR)/$$m.conf" >> debian/$${PKG}.install; \
 	done
 
 sysvipc.yate: sysvipc.cpp
