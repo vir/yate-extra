@@ -6,12 +6,32 @@ Build-Depends: build-essential, debhelper (>= 7), pkg-config, yate-dev
 Standards-Version: 3.7.3
 Homepage: https://github.com/vir/yate-extra
 
-Package: yate-extra-g726codec
+Package: yate-extra-webserver
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: G.726-32 codec stolen from asterisk
+Description: Filesystem access for HTTP server module
 
 Package: yate-extra-sipdate
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Add "Date" header to SIP REGISTER replyes (required for some ip phones).
+
+Package: yate-extra-g726codec
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: G.726-32 codec stolen from asterisk
+
+Package: yate-extra-httpserver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Generic HTTP server
+
+Package: yate-extra-testhttpbase
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Yet Another Telephony Engine - a fully featured software PBX and IVR
+
+Package: yate-extra-sysvipc
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: System V IPC for YATE's javascript
