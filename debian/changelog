@@ -1,3 +1,9 @@
+yate-extra (1.0.1) UNRELEASED; urgency=medium
+
+  * Fix build
+
+ -- Vasily i. Redkin <vir@ctm.ru>  Mon, 09 Feb 2015 11:18:34 +0300
+
 yate-extra (1.0.0~vir2014010101) UNRELEASED; urgency=low
 
   * Initial Release.

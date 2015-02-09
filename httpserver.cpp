@@ -105,7 +105,7 @@ class YHttpMessage: public RefObject
     friend class Connection;
 public:
     YHttpMessage();
-    const static unsigned long UnknownLength = (unsigned long)-1L;
+    const static unsigned long UnknownLength = -1UL;
     virtual ~YHttpMessage();
     Connection* connection()
 	{ return m_conn; }

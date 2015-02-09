@@ -75,5 +75,5 @@ debian/control: Makefile $(SOURCES)
 	done
 
 sysvipc.yate: sysvipc.cpp
-	g++ -Wall -O2 ${MOREFLAGS} $(DEBUG) -lyatescript `yate-config --c-all` `yate-config --ld-all` -o $@ $^
+	g++ -Wall -O2 ${MOREFLAGS} $(DEBUG) `yate-config --c-all` `yate-config --ld-all` -lyatescript -o $@ $^
 

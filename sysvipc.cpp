@@ -8,7 +8,7 @@
 
 #include <yatengine.h>
 //#include <yatescript.h>
-#include "libs/yscript/yatescript.h"
+#include "yatescript.h"
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
