@@ -26,12 +26,12 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Generic HTTP server
 
-Package: yate-extra-testhttpbase
-Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Yet Another Telephony Engine - a fully featured software PBX and IVR
-
 Package: yate-extra-sysvipc
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: System V IPC for YATE's javascript
+
+Package: yate-extra-tests
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: tests for extra modules
