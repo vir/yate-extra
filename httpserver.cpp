@@ -276,7 +276,8 @@ private:
     bool sendErrorResponse(int code);
 private:
     Socket* m_socket;
-    DataBlock m_buffer;
+    DataBlock m_rcvBuffer;
+    DataBlock m_sndBuffer;
     String m_address;
     RefPointer<HTTPServerListener> m_listener;
     YHttpRequest* m_req;
@@ -714,7 +715,7 @@ void Connection::run()
 		return;
 	    }
 	    else if (readsize > 0) {
-		m_buffer.append(rbuf.data(), readsize);
+		m_rcvBuffer.append(rbuf.data(), readsize);
 		if (! received(readsize))
 		    return;
 		killtime = Time::secNow() + m_timeout;
@@ -733,8 +734,8 @@ void Connection::run()
 
 bool Connection::received(unsigned long rlen)
 {
-    const char * data = (const char*)m_buffer.data();
-    unsigned int len = m_buffer.length();
+    const char * data = (const char*)m_rcvBuffer.data();
+    unsigned int len = m_rcvBuffer.length();
     // Find an empty line
     unsigned int bodyOffs = getEmptyLine(data, len);
     if (bodyOffs > len)
@@ -761,10 +762,10 @@ bool Connection::received(unsigned long rlen)
 	m_keepalive = false;
 
     // Prepare request body
-    m_buffer.cut(-bodyOffs); // now m_buffer holds body's beginning
+    m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
 #if 0
     if(0 != m_req->contentLength())
-	m_req->bodySource(new HttpBodySource(*this, &m_buffer));
+	m_req->bodySource(new HttpBodySource(*this, &m_rcvBuffer));
 #endif
 
     // Dispatch http.prereq
@@ -830,11 +831,11 @@ bool Connection::readRequestBody(Message& msg, bool preDisp)
 	return sendErrorResponse(413);
     DataSource* src = 0;//(m_requestBodySource && m_requestBodySource->isValid()) ? m_requestBodySource : NULL;
 
-    if(m_buffer.length()) { // body part that arrived with headers
+    if(m_rcvBuffer.length()) { // body part that arrived with headers
 	if(src)
-	    src->Forward(m_buffer);
+	    src->Forward(m_rcvBuffer);
 	else if(m_req->bodyBuffer().length() < maxBodyBuf)
-	    m_req->m_bodyBuffer.append(m_buffer);
+	    m_req->m_bodyBuffer.append(m_rcvBuffer);
     }
 
     char buf[BODY_BUF_SIZE];
@@ -869,13 +870,14 @@ bool Connection::readRequestBody(Message& msg, bool preDisp)
 
 bool Connection::sendResponse()
 {
-    if(! m_rsp->build(m_buffer))
+    if(! m_rsp->build(m_sndBuffer))
 	return false;
-    if (unsigned int written = (unsigned int)m_socket->writeData(m_buffer.data(), m_buffer.length()) != m_buffer.length()) {
-	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_buffer.length());
+    if (unsigned int written = (unsigned int)m_socket->writeData(m_sndBuffer.data(), m_sndBuffer.length()) != m_sndBuffer.length()) {
+	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_sndBuffer.length());
 	// Destroy the thread, will kill the connection
 	return false;
     }
+    m_sndBuffer.clear();
     return true;
 }
 
@@ -887,10 +889,10 @@ bool Connection::sendErrorResponse(int code)
     String b(code);
     b << " " << e.statusText() << "\r\n";
     e.setBody(b);
-    if(! e.build(m_buffer))
+    if(! e.build(m_rcvBuffer))
 	return false;
-    if (unsigned int written = (unsigned int)m_socket->writeData(m_buffer.data(), m_buffer.length()) != m_buffer.length()) {
-	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_buffer.length());
+    if (unsigned int written = (unsigned int)m_socket->writeData(m_rcvBuffer.data(), m_rcvBuffer.length()) != m_rcvBuffer.length()) {
+	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_rcvBuffer.length());
     }
     return false;
 }
