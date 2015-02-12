@@ -654,6 +654,12 @@ Connection* HTTPServerListener::checkCreate(Socket* sock, const char* addr)
 	delete sock;
 	return 0;
     }
+
+    int arg = 1;
+    if (m_cfg.getBoolValue("nodelay",true) &&
+	    !sock->setOption(SOL_SOCKET, TCP_NODELAY, &arg, sizeof(arg)))
+	Debug("HTTPServer",DebugMild, "Failed to set tcp socket to TCP_NODELAY mode: %s", strerror(sock->error()));
+
     const NamedString* secure = m_cfg.getParam("sslcontext");
     if (TelEngine::null(secure))
 	secure = 0;
