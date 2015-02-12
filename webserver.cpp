@@ -33,8 +33,7 @@ public:
     WebServer(const String& name, const String& root);
     ~WebServer();
     bool received(Message &msg);
-protected:
-    String guessContentType(const String& path);
+    static String guessContentType(const String& path);
 private:
     String m_name, m_root;
 };
@@ -55,6 +54,24 @@ public:
     virtual void initialize();
 private:
     WebServer* m_server;
+};
+
+class Servant : public RefObject
+{
+public:
+    Servant(const String& path);
+    ~Servant();
+    bool run(Message& msg);
+public: // GenObject
+    void* getObject(const String& name) const
+    {
+	if (name == YATOM("Stream"))
+	    return const_cast<File*>(&m_fh);
+	return RefObject::getObject(name);
+    }
+private:
+    String m_path;
+    File m_fh;
 };
 
 /**
@@ -80,7 +97,19 @@ WebServer::~WebServer()
 
 String WebServer::guessContentType(const String& path)
 {
-    return "text/plain";
+    if(path.endsWith(".png"))
+	return "image/png";
+    if(path.endsWith(".jpg") || path.endsWith(".jpeg"))
+	return "image/jpeg";
+    if(path.endsWith(".htm") || path.endsWith(".html"))
+	return "text/html";
+    if(path.endsWith(".js"))
+	return "application/x-javascript";
+    if(path.endsWith(".css"))
+	return "text/css";
+    if(path.endsWith(".txt") || path.endsWith(".asc"))
+	return "text/plain";
+    return "application/octet-stream";
 }
 
 bool WebServer::received(Message &msg)
@@ -95,6 +124,7 @@ bool WebServer::received(Message &msg)
 	msg.setParam("status", "404");
 	return true;
     }
+#if 0
     File f;
     if(! f.openPath(path)) {
 	msg.setParam("status", "403");
@@ -110,6 +140,10 @@ bool WebServer::received(Message &msg)
     msg.setParam("ohdr_Content-Type", guessContentType(path));
     msg.retValue() = buf;
     return true;
+#else
+    Servant* s = new Servant(path);
+    return s->run(msg);
+#endif
 }
 
 
@@ -120,19 +154,19 @@ YWebServerModule::YWebServerModule()
     : Module("webserver","misc")
     , m_server(NULL)
 {
-    Output("Loaded module WEBSERVER");
+    Output("Loaded module WebServer");
 }
 
 YWebServerModule::~YWebServerModule()
 {
-    Output("Unloading module WEBSERVER");
+    Output("Unloading module WebServer");
     TelEngine::destruct(m_server);
 }
 
 void YWebServerModule::initialize()
 {
     static bool notFirst = false;
-    Output("Initializing module WEBSERVER");
+    Output("Initializing module WebServer");
     // Load configuration
     s_cfg = Engine::configFile("webserver");
     s_cfg.load();
@@ -157,6 +191,34 @@ bool YWebServerModule::received(Message &msg, int id)
     return Module::received(msg, id);
 }
 
+/**
+ * Servant
+ */
+Servant::Servant(const String& path)
+    : m_path(path)
+{
+    XDebug(&plugin, DebugAll, "Servant %p created, path: '%s'", this, m_path.c_str());
+}
+
+Servant::~Servant()
+{
+    XDebug(&plugin, DebugAll, "Servant %p destroyed, path: '%s'", this, m_path.c_str());
+}
+
+bool Servant::run(Message& msg)
+{
+    if(! m_fh.openPath(m_path)) {
+	msg.setParam("status", "403");
+	return true;
+    }
+    int64_t l = m_fh.length();
+    msg.setParam("status", "200");
+    msg.userData(this);
+    msg.setParam("ohdr_Content-Length", String(l));
+    msg.retValue() = String::empty();
+    deref();
+    return true;
+}
 
 }; // anonymous namespace
 

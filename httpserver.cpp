@@ -134,6 +134,10 @@ public:
 	{ m_bodyBuffer = body; contentLength(m_bodyBuffer.length()); }
     void setBody(const String& body)
 	{ m_bodyBuffer.assign(const_cast<char*>(body.c_str()), body.length()); contentLength(m_bodyBuffer.length()); }
+    void setBody(TelEngine::Stream* strm, TelEngine::RefObject* ref)
+	{ m_bodyStream = strm; m_bodyObjectRef = ref; }
+    Stream* bodyStream() const
+	{ return m_bodyStream; }
     const DataBlock& bodyBuffer() const
 	{ return m_bodyBuffer; }
 protected:
@@ -144,6 +148,8 @@ private:
     //RefPointer<Connection> m_conn;
     Connection* m_conn;
     String m_httpVersion;
+    TelEngine::Stream* m_bodyStream;
+    TelEngine::RefPointer<TelEngine::RefObject> m_bodyObjectRef;
 };
 
 class YHttpRequest: public YHttpMessage
@@ -157,6 +163,8 @@ public:
     DataSource* source();
     void bodySource(DataSource* src)
 	{ TelEngine::destruct(m_bodySource); m_bodySource = src; }
+    DataSource* bodySource()
+	{ return m_bodySource; }
     void fill(Message& m);
 private:
     bool parseFirst(String& line);
@@ -169,6 +177,10 @@ class YHttpResponse: public YHttpMessage
     YNOCOPY(YHttpResponse); // no automatic copies please
 public:
     YHttpResponse(Connection* conn = NULL);
+    void bodyConsumer(DataConsumer* cons)
+	{ TelEngine::destruct(m_bodyConsumer); m_bodyConsumer = cons; }
+    DataConsumer* bodyConsumer()
+	{ return m_bodyConsumer; }
     int status() const
 	{ return m_rc; }
     void status(int rc)
@@ -182,6 +194,7 @@ public:
     String m_statusText;
 public:
     DataConsumer& consumer();
+    RefPointer<DataConsumer> m_bodyConsumer;
 };
 
 class HttpBodySource: public DataSource
@@ -193,8 +206,12 @@ public:
 
 class HttpBodyConsumer: public DataConsumer
 {
+public:
     HttpBodyConsumer(Connection& conn);
     virtual ~HttpBodyConsumer();
+    virtual unsigned long Consume (const DataBlock& data, unsigned long tStamp, unsigned long flags);
+private:
+    Connection& m_conn;
 };
 
 class SockRef : public RefObject
@@ -211,6 +228,22 @@ public:
     }
 private:
     Socket** m_sock;
+};
+
+class ConnRef : public RefObject
+{
+public:
+    inline ConnRef(Connection* conn)
+	: m_conn(conn)
+	{ }
+    void* getObject(const String& name) const
+    {
+	if (name == YATOM("Connection"))
+	    return m_conn;
+	return RefObject::getObject(name);
+    }
+private:
+    Connection* m_conn;
 };
 
 class HTTPServerListener : public RefObject
@@ -263,6 +296,7 @@ public:
     Connection(Socket* sock, const char* addr, HTTPServerListener* listener);
     ~Connection();
 
+    virtual void* getObject (const String& name) const;
     virtual void run();
     inline const String& address() const
 	{ return m_address; }
@@ -272,7 +306,8 @@ public:
 private:
     bool received(unsigned long rlen);
     bool readRequestBody(Message& msg, bool preDisp);
-    bool sendResponse();
+    bool sendResponseChunked();
+    bool sendResponseCL(unsigned int contentLength);
     bool sendErrorResponse(int code);
 private:
     Socket* m_socket;
@@ -305,6 +340,7 @@ YHttpMessage::YHttpMessage()
     , m_contentLength(UnknownLength)
     , m_conn(NULL)
     , m_httpVersion("1.0")
+    , m_bodyStream(NULL)
 {
 }
 
@@ -450,18 +486,21 @@ YHttpResponse::YHttpResponse(Connection* conn /* = NULL*/)
 
 void YHttpResponse::update(const Message& msg)
 {
+    contentLength(UnknownLength);
     status(msg.getIntValue("status", 200));
     String prefix = msg.getValue("ohdr_prefix", "ohdr_");
     unsigned int n = msg.length();
     for (unsigned int j = 0; j < n; j++) {
-	const NamedString* hdr = headers().getParam(j);
+	const NamedString* hdr = msg.getParam(j);
 	if (! hdr)
 	    continue;
 	String tmp = hdr->name();
 	if (! tmp.startSkip(prefix, false))
 	    continue;
-	if (tmp == "Content-Length")
+	if (tmp == YSTRING("Content-Length")) {
+	    contentLength(hdr->toLong(UnknownLength));
 	    continue;
+	}
 	setHeader(tmp, hdr->c_str());
     }
 }
@@ -482,7 +521,8 @@ bool YHttpResponse::build(DataBlock& buf)
 	tmp << "\r\n";
 	firstLine << tmp;
     }
-    firstLine << "Content-Length: " << contentLength() << "\r\n";
+    if(contentLength() != UnknownLength)
+	firstLine << "Content-Length: " << contentLength() << "\r\n";
     buf.clear();
     buf.append(firstLine);
     buf.append("\r\n");
@@ -504,11 +544,17 @@ HttpBodySource::~HttpBodySource()
 
 
 HttpBodyConsumer::HttpBodyConsumer(Connection& conn)
+    : m_conn(conn)
 {
 }
 
 HttpBodyConsumer::~HttpBodyConsumer()
 {
+}
+
+unsigned long HttpBodyConsumer::Consume(const DataBlock& data, unsigned long tStamp, unsigned long flags)
+{
+    return 0UL;
 }
 
 
@@ -675,12 +721,39 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
 
 Connection::~Connection()
 {
+    TelEngine::destruct(m_req);
+    TelEngine::destruct(m_rsp);
     s_mutex.lock();
     s_connList.remove(this,false);
     s_mutex.unlock();
     Output("Closing connection to %s",m_address.c_str());
     delete m_socket;
     m_socket = 0;
+}
+
+void* Connection::getObject (const String& name) const
+{
+    if (name == YATOM("Connection"))
+	return const_cast<Connection*>(this);
+    if (name == YATOM("YHttpRequest"))
+	return m_req;
+    if (name == YATOM("YHttpResponse"))
+	return m_rsp;
+    if (name == YATOM("Socket"))
+	return m_socket;
+    if (name == YATOM("HTTPServerListener"))
+	return m_listener;
+    if (name == YATOM("DataSource") && m_req) {
+	TelEngine::DataSource* ds = new HttpBodySource(*const_cast<Connection*>(this), const_cast<TelEngine::DataBlock*>(&m_rcvBuffer));
+	m_req->bodySource(ds);
+	return ds;
+    }
+    if (name == YATOM("DataConsumer") && m_rsp) {
+	TelEngine::DataConsumer* dc = new HttpBodyConsumer(*const_cast<Connection*>(this));
+	m_rsp->bodyConsumer(dc);
+	return dc;
+    }
+    return GenObject::getObject(name);
 }
 
 void Connection::run()
@@ -763,14 +836,15 @@ bool Connection::received(unsigned long rlen)
 
     // Prepare request body
     m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
-#if 0
-    if(0 != m_req->contentLength())
-	m_req->bodySource(new HttpBodySource(*this, &m_rcvBuffer));
-#endif
 
     // Dispatch http.prereq
     Message m("http.prereq");
-//    m.userData(this);
+    if(true)
+    {
+	ConnRef* self = new ConnRef(this);
+	m.userData(self);
+	self->deref();
+    }
     m.addParam("server", m_listener->cfg().c_str());
     m.addParam("address", m_address);
     m.addParam("keepalive", String::boolText(m_keepalive));
@@ -806,9 +880,19 @@ bool Connection::received(unsigned long rlen)
     // Prepare response
     m_rsp->setHeader("Connection", connectionHeader());
     m_rsp->update(m);
-    m_rsp->setBody(m.retValue());
+    if(m.retValue().null() || 0 == m.retValue().length()) {
+	TelEngine::Stream* strm = reinterpret_cast<TelEngine::Stream*>(m.userObject(YATOM("Stream")));
+	if(strm) {
+	    // XXX TODO check not our stream
+	    TelEngine::RefObject* ref = reinterpret_cast<TelEngine::RefObject*>(m.userObject("RefObject"));
+	    XDebug("HTTPServer",DebugInfo,"Got stream response %p, ref %p", strm, ref);
+	    m_rsp->setBody(strm, ref);
+	}
+    } else
+	m_rsp->setBody(m.retValue());
 
-    if(! sendResponse())
+    bool ok = (m_rsp->contentLength() != YHttpResponse::UnknownLength) ? sendResponseCL(m_rsp->contentLength()) : sendResponseChunked();
+    if(! ok)
 	return false;
     if(! m_keepalive) {
 	DDebug("HTTPServer",DebugInfo,"Closing non-keepalive connection %d",m_socket->handle());
@@ -868,7 +952,13 @@ bool Connection::readRequestBody(Message& msg, bool preDisp)
     return true;
 }
 
-bool Connection::sendResponse()
+bool Connection::sendResponseChunked()
+{
+    XDebug("HTTPServer",DebugInfo,"sendResponseChunked()");
+    return false;
+}
+
+bool Connection::sendResponseCL(unsigned int contentLength)
 {
     if(! m_rsp->build(m_sndBuffer))
 	return false;
@@ -878,6 +968,24 @@ bool Connection::sendResponse()
 	return false;
     }
     m_sndBuffer.clear();
+    if(m_rsp->bodyStream()) {
+	XDebug("HTTPServer",DebugInfo,"sendResponseCL(%u): sending stream %p", contentLength, m_rsp->bodyStream());
+	const size_t chunk_size = 1024;
+	m_sndBuffer.resize(chunk_size);
+	for (;;) {
+	    int rd = m_rsp->bodyStream()->readData(m_sndBuffer.data(), min((unsigned int)m_sndBuffer.length(), contentLength));
+	    if (! rd)
+		break;
+	    int wd = m_socket->writeData(m_sndBuffer.data(), rd);
+	    if (wd != rd) {
+		Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),wd,rd);
+		return false;
+	    }
+	    contentLength -= rd;
+	    if (! contentLength)
+		break;
+	}
+    }
     return true;
 }
 
@@ -889,10 +997,10 @@ bool Connection::sendErrorResponse(int code)
     String b(code);
     b << " " << e.statusText() << "\r\n";
     e.setBody(b);
-    if(! e.build(m_rcvBuffer))
+    if(! e.build(m_sndBuffer))
 	return false;
-    if (unsigned int written = (unsigned int)m_socket->writeData(m_rcvBuffer.data(), m_rcvBuffer.length()) != m_rcvBuffer.length()) {
-	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_rcvBuffer.length());
+    if (unsigned int written = (unsigned int)m_socket->writeData(m_sndBuffer.data(), m_sndBuffer.length()) != m_sndBuffer.length()) {
+	Debug("HTTPServer",DebugInfo,"Socket %d wrote only %d out of %d bytes",m_socket->handle(),written,m_sndBuffer.length());
     }
     return false;
 }
