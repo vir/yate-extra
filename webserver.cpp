@@ -32,7 +32,7 @@ class WebServer: public GenObject
 public:
     WebServer(const String& name, const String& root);
     ~WebServer();
-    bool received(Message &msg);
+    bool received(Message &msg, bool reqdata);
     static String guessContentType(const String& path);
 private:
     String m_name, m_root;
@@ -45,6 +45,7 @@ class YWebServerModule : public Module
 {
     enum {
 	HttpRequest = Private,
+	HttpReqData,
     };
 protected:
     virtual bool received(Message &msg, int id);
@@ -61,14 +62,9 @@ class Servant : public RefObject
 public:
     Servant(const String& path);
     ~Servant();
-    bool run(Message& msg);
+    bool received(Message& msg);
 public: // GenObject
-    void* getObject(const String& name) const
-    {
-	if (name == YATOM("Stream"))
-	    return const_cast<File*>(&m_fh);
-	return RefObject::getObject(name);
-    }
+    void* getObject(const String& name) const;
 private:
     String m_path;
     File m_fh;
@@ -112,9 +108,9 @@ String WebServer::guessContentType(const String& path)
     return "application/octet-stream";
 }
 
-bool WebServer::received(Message &msg)
+bool WebServer::received(Message &msg, bool reqdata)
 {
-    if(YSTRING("GET") != msg.getValue("method"))
+    if(YSTRING("GET") != msg.getValue("method") || reqdata)
 	return false;
 
     String path = m_root + msg.getParam("uri");
@@ -141,8 +137,10 @@ bool WebServer::received(Message &msg)
     msg.retValue() = buf;
     return true;
 #else
-    Servant* s = new Servant(path);
-    return s->run(msg);
+    Servant* s = reinterpret_cast<Servant*>(msg.userObject("Servant"));
+    if(! s)
+	s = new Servant(path);
+    return s->received(msg);
 #endif
 }
 
@@ -176,17 +174,20 @@ void YWebServerModule::initialize()
     if (notFirst)
 	return;
     notFirst = true;
-    installRelay(HttpRequest, "http.request", HttpRequest);
+    installRelay(HttpRequest, "http.serve", 100);
+    installRelay(HttpReqData, "http.preserve", 100);
     setup();
 }
 
 bool YWebServerModule::received(Message &msg, int id)
 {
+    if(! m_server)
+	return false;
     switch(id) {
     case HttpRequest:
-	if(! m_server)
-	    return false;
-	return m_server->received(msg);
+	return m_server->received(msg, false);
+    case HttpReqData:
+	return m_server->received(msg, true);
     }
     return Module::received(msg, id);
 }
@@ -205,8 +206,18 @@ Servant::~Servant()
     XDebug(&plugin, DebugAll, "Servant %p destroyed, path: '%s'", this, m_path.c_str());
 }
 
-bool Servant::run(Message& msg)
+void* Servant::getObject(const String& name) const
 {
+    if (name == YATOM("Stream"))
+	return const_cast<File*>(&m_fh);
+    if (name == YATOM("Servant"))
+	return const_cast<Servant*>(this);
+    return RefObject::getObject(name);
+}
+
+bool Servant::received(Message& msg)
+{
+    XDebug(&plugin, DebugAll, "Servant %p got message '%s'", this, msg.c_str());
     if(! m_fh.openPath(m_path)) {
 	msg.setParam("status", "403");
 	return true;

@@ -838,7 +838,7 @@ bool Connection::received(unsigned long rlen)
     m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
 
     // Dispatch http.prereq
-    Message m("http.prereq");
+    Message m("http.preserve");
     if(true)
     {
 	ConnRef* self = new ConnRef(this);
@@ -857,7 +857,7 @@ bool Connection::received(unsigned long rlen)
     m_rsp = new YHttpResponse(this);
 
     // Dispatch http.request
-    m = "http.request";
+    m = "http.serve";
     m.retValue().clear();
     if (m_req->bodyBuffer().length())
 	m.setParam("content", String(reinterpret_cast<char*>(m_req->bodyBuffer().data()), m_req->bodyBuffer().length()));
