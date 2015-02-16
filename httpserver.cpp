@@ -24,6 +24,7 @@
 #include <yatemime.h> // for getUnfoldedLine
 #include <string.h>
 #include <stdio.h> // for snprintf
+#include <stdlib.h> // for atoi
 
 /**
  * Message http.preserve is dispatched after request headers is received.
@@ -53,7 +54,7 @@ static TokenDict s_httpResponseCodes[] = {
     { "Partial Content", 206 },
     { "Multiple Choices", 300 },
     { "Moved Permanently", 301 },
-    { "302 Found", 302 },
+    { "Found", 302 },
     { "See Other", 303 },
     { "Not Modified", 304 },
     { "Use Proxy", 305 },
@@ -164,8 +165,6 @@ public:
 	{ m_bodyStream = strm; m_bodyObjectRef = ref; }
     Stream* bodyStream() const
 	{ return m_bodyStream; }
-    bool bodyExpected() const
-	{ return UnknownLength != contentLength(); } // XXX chunked TE ?
 private:
     NamedList m_headers;
     unsigned int m_contentLength;
@@ -185,6 +184,7 @@ public:
 public:
     bool parse(const char* buf, int len);
     void fill(TelEngine::Message& m);
+    bool bodyExpected() const;
 private:
     bool parseFirst(String& line);
 };
@@ -250,6 +250,8 @@ public:
     void init();
     inline NamedList& cfg()
 	{ return m_cfg; }
+    const String& address() const
+	{ return m_address; }
 private:
     void run();
     bool initSocket();
@@ -298,10 +300,11 @@ public:
     void checkTimer(u_int64_t time);
 private:
     bool received(unsigned long rlen);
-    bool readRequestBody(Message& msg, bool preDisp);
-    bool sendResponse();
+    bool readRequestBody(Message& msg);
+    bool sendResponse(YHttpResponse& rsp);
     bool sendErrorResponse(int code);
     bool sendData(unsigned int length, unsigned int offset = 0);
+    void appendMissingErrorResponseBody(YHttpResponse& rsp);
 private:
     Socket* m_socket;
     DataBlock m_rcvBuffer;
@@ -390,6 +393,17 @@ void YHttpRequest::fill(Message& m)
 	    continue;
 	m.addParam("hdr_" + hdr->name(), *hdr);
     }
+}
+
+bool YHttpRequest::bodyExpected() const
+{
+    if (m_method == YSTRING("TRACE"))
+	return false;
+    if (hasHeader("Transfer-Encoding") || hasHeader("Content-Length"))
+	return true;
+    if (m_method == YSTRING("POST") || m_method == YSTRING("PUT"))
+	return true;
+    return false;
 }
 
 bool YHttpRequest::parseFirst(String& line)
@@ -794,11 +808,10 @@ bool Connection::received(unsigned long rlen)
     if(m_connection & Close)
 	m_keepalive = false;
 
-    // Prepare request body
+    // Remove processed part from input buffer
     m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
 
-    // Dispatch http.prereq
-    Message m("http.preserve");
+    Message m("http.route");
     if(true)
     {
 	ConnRef* self = new ConnRef(this);
@@ -807,11 +820,20 @@ bool Connection::received(unsigned long rlen)
     }
     m.addParam("server", m_listener->cfg().c_str());
     m.addParam("address", m_address);
+    m.addParam("local", m_listener->address());
     m.addParam("keepalive", String::boolText(m_keepalive));
     m_req->fill(m);
-    bool preDisp = Engine::dispatch(m);
+    if (Engine::dispatch(m)) {
+	TelEngine::String rv = m.retValue();
+	if (rv[0] >= '3' && rv[0] <= '9')
+	    return sendErrorResponse(atoi(rv.c_str())); // XXX TODO add headers from m
+	m.addParam("handler", rv);
+	m.retValue() = TelEngine::String::empty();
+    }
 
-    if (preDisp) {
+    // Dispatch http.prereq in case someone wants to read request body
+    m = "http.preserve";
+    if (Engine::dispatch(m)) {
 	TelEngine::Stream* strm = reinterpret_cast<TelEngine::Stream*>(m.userObject(YATOM("Stream")));
 	if(strm) {
 	    TelEngine::RefObject* ref = reinterpret_cast<TelEngine::RefObject*>(m.userObject("RefObject"));
@@ -820,6 +842,7 @@ bool Connection::received(unsigned long rlen)
 	}
     }
 
+    // if noone wants to read request body, lets prepare our own buffer
     BodyBuffer* request_body_buffer = NULL;
     if (! m_req->bodyStream() && m_req->bodyExpected()) {
 	request_body_buffer = new BodyBuffer();
@@ -827,8 +850,9 @@ bool Connection::received(unsigned long rlen)
 	request_body_buffer->deref();
     }
 
-    if (m_req->bodyExpected() && ! readRequestBody(m, preDisp))
-	return false; // error response is already sent
+    // read request body finally
+    if (m_req->bodyExpected() && ! readRequestBody(m))
+	return false; // error response is already sent in readRequestBody()
 
     m_rsp = new YHttpResponse(this);
     m_rsp->httpVersion(m_req->httpVersion());
@@ -865,7 +889,8 @@ bool Connection::received(unsigned long rlen)
 	    m_rsp->setBody(strm, ref);
 	}
 	else {
-	    return sendErrorResponse(m_rsp->status());
+	    m_rsp->contentLength(0);
+	    appendMissingErrorResponseBody(*m_rsp);
 	}
     }
     else {
@@ -873,8 +898,8 @@ bool Connection::received(unsigned long rlen)
 	m_rsp->setBody(m.retValue());
     }
 
-    bool ok = sendResponse();
-    if(! ok)
+    // Send response
+    if(! sendResponse(*m_rsp))
 	return false;
     if(! m_keepalive) {
 	DDebug("HTTPServer",DebugInfo,"Closing non-keepalive connection %d",m_socket->handle());
@@ -888,7 +913,7 @@ bool Connection::received(unsigned long rlen)
     return true;
 }
 
-bool Connection::readRequestBody(Message& msg, bool preDisp)
+bool Connection::readRequestBody(Message& msg)
 {
     unsigned int cl = m_req->contentLength();
     bool untilEof = !m_keepalive && cl == YHttpMessage::UnknownLength; // HTTP 0.x request
@@ -978,31 +1003,31 @@ bool Connection::sendData(unsigned int length, unsigned int offset /* = 0 */)
     return false;
 }
 
-bool Connection::sendResponse()
+bool Connection::sendResponse(YHttpResponse& rsp)
 {
-    unsigned int to_send = m_rsp->contentLength();
+    unsigned int to_send = rsp.contentLength();
     bool chunked = to_send == YHttpMessage::UnknownLength;
 
     if (chunked)
-	m_rsp->addHeader("Transfer-Encoding", "chunked");
+	rsp.addHeader("Transfer-Encoding", "chunked");
     else
-	m_rsp->addHeader("Content-Length", TelEngine::String(to_send));
-    if (! m_rsp->build(m_sndBuffer))
+	rsp.addHeader("Content-Length", TelEngine::String(to_send));
+    if (! rsp.build(m_sndBuffer))
 	return false;
-    XDebug("HTTPServer",DebugInfo,"sendResponse(): chunked: %s, to_send: %u, stream: %p", String::boolText(chunked), to_send, m_rsp->bodyStream());
+    XDebug("HTTPServer",DebugInfo,"sendResponse(): chunked: %s, to_send: %u, stream: %p", String::boolText(chunked), to_send, rsp.bodyStream());
 
     if (! sendData(m_sndBuffer.length()))
 	return false;
     m_sndBuffer.clear();
 
-    if(m_rsp->bodyStream()) {
+    if(rsp.bodyStream()) {
 	m_sndBuffer.resize(m_maxSendChunkSize + 8); // 4 hex digits + crlf + data + crlf
 	unsigned char * read_ptr = m_sndBuffer.data(6);
 	for (;;) {
 	    unsigned int to_read = m_maxSendChunkSize;
 	    if (! chunked && to_send < m_maxSendChunkSize)
 		to_read = to_send;
-	    int rd = m_rsp->bodyStream()->readData(read_ptr, to_read);
+	    int rd = rsp.bodyStream()->readData(read_ptr, to_read);
 	    if (! rd) {
 		if (! chunked) {
 		    Debug("HTTPServer",DebugInfo,"Socket %d: got EOF, while %u bytes more expected",m_socket->handle(),to_send);
@@ -1048,13 +1073,8 @@ bool Connection::sendErrorResponse(int code)
     YHttpResponse e(this);
     e.setHeader("Connection", "close");
     e.status(code);
-    String b(code);
-    b << " " << e.statusText() << "\r\n";
-    e.setBody(b);
-    e.addHeader("Content-Length", TelEngine::String(e.contentLength()));
-    if(! e.build(m_sndBuffer))
-	return false;
-    sendData(m_sndBuffer.length());
+    appendMissingErrorResponseBody(e);
+    sendResponse(e);
     return false;
 }
 
@@ -1082,6 +1102,17 @@ String Connection::connectionHeader()
 	flags &= ~fl;
     }
     return r;
+}
+
+void Connection::appendMissingErrorResponseBody(YHttpResponse& rsp)
+{
+    int status = rsp.status();
+    if (status < 200 || status >= 600)
+	return;
+    String b(status);
+    b << " " << rsp.statusText() << "\r\n";
+    rsp.setBody(b);
+    rsp.addHeader("Content-Type", "text/plain");
 }
 
 /**
