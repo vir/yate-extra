@@ -223,22 +223,6 @@ private:
     Socket** m_sock;
 };
 
-class ConnRef : public RefObject
-{
-public:
-    inline ConnRef(Connection* conn)
-	: m_conn(conn)
-	{ }
-    void* getObject(const String& name) const
-    {
-	if (name == YATOM("Connection"))
-	    return m_conn;
-	return RefObject::getObject(name);
-    }
-private:
-    Connection* m_conn;
-};
-
 class HTTPServerListener : public RefObject
 {
     friend class HTTPServerThread;
@@ -273,7 +257,7 @@ private:
     RefPointer<HTTPServerListener> m_listener;
 };
 
-class Connection : public GenObject, public Thread
+class Connection: public RefObject, public Thread
 {
 public:
     enum ConnToken {
@@ -293,6 +277,7 @@ public:
 
     virtual void* getObject (const String& name) const;
     virtual void run();
+    void runConnection();
     inline const String& address() const
 	{ return m_address; }
     inline const NamedList& cfg() const
@@ -311,8 +296,8 @@ private:
     DataBlock m_sndBuffer;
     String m_address;
     RefPointer<HTTPServerListener> m_listener;
-    YHttpRequest* m_req;
-    YHttpResponse* m_rsp;
+    RefPointer<YHttpRequest> m_req;
+    RefPointer<YHttpResponse> m_rsp;
     bool m_keepalive;
     unsigned int m_maxRequests;
     unsigned int m_maxReqBody;
@@ -348,6 +333,7 @@ YHttpMessage::~YHttpMessage()
 void YHttpMessage::connection(Connection* conn)
 {
     m_conn = conn;
+    XDebug(DebugAll,"YHttpMessage[%p]::connection(%p)",this,conn);
 }
 
 // XXX from modules/ysipchan.cpp
@@ -408,7 +394,7 @@ bool YHttpRequest::bodyExpected() const
 
 bool YHttpRequest::parseFirst(String& line)
 {
-    XDebug(DebugAll,"YHttpRequest::parse firstline= '%s'",line.c_str());
+    XDebug(DebugAll,"YHttpRequest[%p]::parse firstline= '%s'",this,line.c_str());
     if (line.null())
 	return false;
     static Regexp r2("^\\([[:alpha:]]\\+\\)[[:space:]]\\+\\([^[:space:]]\\+\\)[[:space:]]\\+[Hh][Tt][Tt][Pp]/\\([0-9]\\.[0-9]\\+\\)$");
@@ -420,15 +406,15 @@ bool YHttpRequest::parseFirst(String& line)
     m_method = line.matchString(1).toUpper();
     m_uri = line.matchString(2);
     httpVersion(line.matchString(3).toUpper());
-    DDebug(DebugAll,"got request method='%s' uri='%s' version='%s'",
-	m_method.c_str(), m_uri.c_str(), httpVersion().c_str());
+    DDebug(DebugAll,"YHttpRequest[%p] got request method='%s' uri='%s' version='%s'",
+	this, m_method.c_str(), m_uri.c_str(), httpVersion().c_str());
     return true;
 }
 
 bool YHttpRequest::parse(const char* buf, int len)
 {
-    DDebug(DebugAll,"YHttpRequest::parse(%p,%d) [%p]",buf,len,this);
-    XDebug(DebugAll,"Request to parse: %s [%p]", String(buf,len).c_str(), this);
+    DDebug(DebugAll,"YHttpRequest[%p]::parse(%p,%d)",this,buf,len);
+    XDebug(DebugAll,"Request to parse: %s", String(buf,len).c_str());
     String* line = MimeBody::getUnfoldedLine(buf, len);
     if (line->null())
 	return false;
@@ -457,7 +443,7 @@ bool YHttpRequest::parse(const char* buf, int len)
 	}
 	*line >> ":";
 	line->trimBlanks();
-	XDebug(DebugAll,"YHttpRequest::parse header='%s' value='%s'",name.c_str(),line->c_str());
+	XDebug(DebugAll,"YHttpRequest[%p]::parse header='%s' value='%s'",this,name.c_str(),line->c_str());
 
 #if 0
 	if ((name &= "WWW-Authenticate") ||
@@ -480,7 +466,7 @@ bool YHttpRequest::parse(const char* buf, int len)
 	else if(m_method == YSTRING("GET") || m_method == YSTRING("HEAD")) // HTTP1.0
 	    contentLength(0);
     }
-    DDebug(DebugAll,"YHttpRequest::parse %d header lines, body %u bytes", headers().count(), contentLength());
+    DDebug(DebugAll,"YHttpRequest[%p]::parse %d header lines, body %u bytes", this, headers().count(), contentLength());
     return true;
 }
 
@@ -514,7 +500,7 @@ void YHttpResponse::update(const Message& msg)
 
 bool YHttpResponse::build(DataBlock& buf)
 {
-    XDebug(DebugAll,"YHttpResponse::build: httpVersion=%s status=%d, text='%s'", httpVersion().c_str(), status(), m_statusText.c_str());
+    XDebug(DebugAll,"YHttpResponse[%p]::build: httpVersion=%s status=%d, text='%s'", this, httpVersion().c_str(), status(), m_statusText.c_str());
     String firstLine("HTTP/");
     firstLine << httpVersion() << " " << status() << " " << m_statusText << "\r\n";
     unsigned int n = headers().length();
@@ -662,7 +648,7 @@ Connection* HTTPServerListener::checkCreate(Socket* sock, const char* addr)
 	(secure ? " secure" : ""),addr,m_address.c_str());
     Connection* conn = new Connection(sock,addr,this);
     if (conn->error()) {
-	conn->destruct();
+	conn->deref();
 	return 0;
     }
     conn->startup();
@@ -677,7 +663,7 @@ TokenDict Connection::s_connTokens[] = {
     { "close",     Close },
     { "te",        TE },
     { "trailers",  Trailers },
-    { "upgraqde",  Upgrade },
+    { "upgrade",  Upgrade },
     { 0, 0 },
 };
 
@@ -685,7 +671,6 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
     : Thread("HTTPServer connection"),
       m_socket(sock),
       m_address(addr), m_listener(listener),
-      m_req(0), m_rsp(0),
       m_keepalive(false),
       m_maxRequests(0),
       m_timeout(10)
@@ -705,8 +690,6 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
 
 Connection::~Connection()
 {
-    TelEngine::destruct(m_req);
-    TelEngine::destruct(m_rsp);
     s_mutex.lock();
     s_connList.remove(this,false);
     s_mutex.unlock();
@@ -715,8 +698,9 @@ Connection::~Connection()
     m_socket = 0;
 }
 
-void* Connection::getObject (const String& name) const
+void* Connection::getObject(const String& name) const
 {
+    XDebug(DebugAll,"Connection[%p]::getObject('%s')", this, name.c_str());
     if (name == YATOM("Connection"))
 	return const_cast<Connection*>(this);
     if (name == YATOM("YHttpRequest"))
@@ -734,7 +718,12 @@ void Connection::run()
 {
     if (!m_socket)
 	return;
+    runConnection();
+    deref();
+}
 
+void Connection::runConnection()
+{
     u_int32_t killtime = Time::secNow() + m_timeout;
     while (m_socket && m_socket->valid()) {
 	Thread::check();
@@ -790,6 +779,7 @@ bool Connection::received(unsigned long rlen)
 
     // Got all headers, start processing request
     m_req = new YHttpRequest(this);
+    m_req->deref();
 
     // Parse the message headers
     if(! m_req->parse(data, bodyOffs)) {
@@ -812,12 +802,7 @@ bool Connection::received(unsigned long rlen)
     m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
 
     Message m("http.route");
-    if(true)
-    {
-	ConnRef* self = new ConnRef(this);
-	m.userData(self);
-	self->deref();
-    }
+    m.userData(this);
     m.addParam("server", m_listener->cfg().c_str());
     m.addParam("address", m_address);
     m.addParam("local", m_listener->address());
@@ -831,13 +816,44 @@ bool Connection::received(unsigned long rlen)
 	m.retValue() = TelEngine::String::empty();
     }
 
+    if (m_connection & Upgrade && m_req->hasHeader("Upgrade")) {
+	m = "http.upgrade";
+	if (Engine::dispatch(m)) {
+	    RefPointer<RefObject> ref = static_cast<RefObject*>(m.userObject("RefObject"));
+	    Runnable* code = static_cast<Runnable*>(m.userObject("Runnable"));
+	    XDebug("HTTPServer",DebugAll,"Connection[%p] got http.upgrade Runnable response %p", this, code);
+	    if (code) {
+		m_rsp = new YHttpResponse(this);
+		m_rsp->httpVersion(m_req->httpVersion());
+		m_rsp->update(m);
+		m_rsp->addHeader("Connection", "Upgrade");
+		m_rsp->addHeader("Upgrade", "websocket");
+		m_rsp->status(101);
+		m_rsp->contentLength(0);
+		XDebug("HTTPServer",DebugAll,"Connection[%p]: sending 101 response %p", this, (YHttpResponse*)m_rsp);
+		if(! sendResponse(*m_rsp))
+		    return false;
+		XDebug("HTTPServer",DebugAll,"Connection[%p]: sent 101 response %p", this, (YHttpResponse*)m_rsp);
+		m_req = NULL;
+		m_rsp = NULL;
+		code->run();
+		XDebug("HTTPServer",DebugAll,"Connection[%p]: dune with upgraded connection", this);
+	    }
+	    return false;
+	}
+	else {
+	    //m.delHeader("Upgrade");
+	    m_connection &= ~Upgrade;
+	}
+    }
+
     // Dispatch http.prereq in case someone wants to read request body
     m = "http.preserve";
     if (Engine::dispatch(m)) {
 	TelEngine::Stream* strm = reinterpret_cast<TelEngine::Stream*>(m.userObject(YATOM("Stream")));
 	if(strm) {
 	    TelEngine::RefObject* ref = reinterpret_cast<TelEngine::RefObject*>(m.userObject("RefObject"));
-	    XDebug("HTTPServer",DebugInfo,"Got stream response %p, ref %p", strm, ref);
+	    XDebug("HTTPServer",DebugInfo,"Connection[%p] got stream response %p, ref %p", this, strm, ref);
 	    m_req->setBody(strm, ref);
 	}
     }
@@ -885,7 +901,7 @@ bool Connection::received(unsigned long rlen)
 	TelEngine::Stream* strm = reinterpret_cast<TelEngine::Stream*>(m.userObject(YATOM("Stream")));
 	if(strm) {
 	    TelEngine::RefObject* ref = reinterpret_cast<TelEngine::RefObject*>(m.userObject("RefObject"));
-	    XDebug("HTTPServer",DebugInfo,"Got stream response %p, ref %p", strm, ref);
+	    XDebug("HTTPServer",DebugInfo,"Connection[%p] got stream response %p, ref %p", this, strm, ref);
 	    m_rsp->setBody(strm, ref);
 	}
 	else {
@@ -894,7 +910,7 @@ bool Connection::received(unsigned long rlen)
 	}
     }
     else {
-	XDebug("HTTPServer",DebugInfo,"Got simple response <<%s>>", m.retValue().c_str());
+	XDebug("HTTPServer",DebugInfo,"Connection[%p] got simple response <<%s>>", this, m.retValue().c_str());
 	m_rsp->setBody(m.retValue());
     }
 
@@ -902,14 +918,14 @@ bool Connection::received(unsigned long rlen)
     if(! sendResponse(*m_rsp))
 	return false;
     if(! m_keepalive) {
-	DDebug("HTTPServer",DebugInfo,"Closing non-keepalive connection %d",m_socket->handle());
+	DDebug("HTTPServer",DebugInfo,"Closing non-keepalive Connection[%p], socket %d",this,m_socket->handle());
 	m_socket->shutdown(true, true);
 	return false;
     }
 
     // Request complete
-    TelEngine::destruct(m_req);
-    TelEngine::destruct(m_rsp);
+    m_req = NULL;
+    m_rsp = NULL;
     return true;
 }
 
@@ -923,11 +939,11 @@ bool Connection::readRequestBody(Message& msg)
 
     TelEngine::Stream* strm = m_req->bodyStream();
     if (! strm) {
-	Debug("HTTPServer",DebugWarn,"No request body buffer (socket %d)",m_socket->handle());
+	Debug("HTTPServer",DebugWarn,"Connection[%p]: no request body buffer (socket %d)",this,m_socket->handle());
 	return sendErrorResponse(500);
     }
     if (m_rcvBuffer.length()) { // body part that arrived with headers
-	XDebug("HTTPServer", DebugAll, "readRequestBody: got %u bytes of body together with with headers", m_rcvBuffer.length());
+	XDebug("HTTPServer", DebugAll, "Connection[%p]: readRequestBody: got %u bytes of body together with with headers", this, m_rcvBuffer.length());
 	if(m_rcvBuffer.length() > maxBodyBuf)
 	    return sendErrorResponse(413);
 	strm->writeData(m_rcvBuffer);
@@ -938,7 +954,7 @@ bool Connection::readRequestBody(Message& msg)
     u_int32_t killtime = Time::secNow() + m_timeout;
     while(cl) {
 	int r = m_socket->readData(buf, min(cl, sizeof(buf)));
-	XDebug("HTTPServer", DebugAll, "readRequestBody: read %d bytes, left %d, untilEof=%s, maxBodyBuf=%u", r, cl, String::boolText(untilEof), maxBodyBuf);
+	XDebug("HTTPServer", DebugAll, "Connection[%p]: readRequestBody: read %d bytes, left %d, untilEof=%s, maxBodyBuf=%u", this, r, cl, String::boolText(untilEof), maxBodyBuf);
 	if(r == 0 && untilEof)
 	    break;
 	if(r < 0 && m_socket->canRetry() && (!m_timeout || Time::secNow() < killtime)) {
@@ -1014,7 +1030,7 @@ bool Connection::sendResponse(YHttpResponse& rsp)
 	rsp.addHeader("Content-Length", TelEngine::String(to_send));
     if (! rsp.build(m_sndBuffer))
 	return false;
-    XDebug("HTTPServer",DebugInfo,"sendResponse(): chunked: %s, to_send: %u, stream: %p", String::boolText(chunked), to_send, rsp.bodyStream());
+    XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): chunked: %s, to_send: %u, stream: %p", this, String::boolText(chunked), to_send, rsp.bodyStream());
 
     if (! sendData(m_sndBuffer.length()))
 	return false;
@@ -1030,10 +1046,10 @@ bool Connection::sendResponse(YHttpResponse& rsp)
 	    int rd = rsp.bodyStream()->readData(read_ptr, to_read);
 	    if (! rd) {
 		if (! chunked) {
-		    Debug("HTTPServer",DebugInfo,"Socket %d: got EOF, while %u bytes more expected",m_socket->handle(),to_send);
+		    Debug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse: Socket %d: got EOF, while %u bytes more expected",this,m_socket->handle(),to_send);
 		    return false;
 		}
-		XDebug("HTTPServer",DebugInfo,"sendResponse(): got EOF");
+		XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): got EOF", this);
 		break;
 	    }
 	    if (chunked) {
@@ -1046,23 +1062,23 @@ bool Connection::sendResponse(YHttpResponse& rsp)
 	    if (chunked) {
 		if (! sendData(rd + 8))
 		    return false;
-		XDebug("HTTPServer",DebugInfo,"sendResponse(): sent chunk %u bytes", rd);
+		XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): sent chunk %u bytes", this, rd);
 	    }
 	    else {
 		if (! sendData(rd, 6))
 		    return false;
 		to_send -= rd;
-		XDebug("HTTPServer",DebugInfo,"sendResponse(): sent chunk %u bytes, %u bytes left", rd, to_send);
+		XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): sent chunk %u bytes, %u bytes left", this, rd, to_send);
 		if (! to_send)
 		    break;
 	    }
 	}
 	if (chunked) {
-	    XDebug("HTTPServer",DebugInfo,"sendResponse(): sending empty chunk and empty trailer");
+	    XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): sending empty chunk and empty trailer", this);
 	    m_socket->writeData("0\r\n\r\n", 5);
 	}
 	else {
-	    XDebug("HTTPServer",DebugInfo,"sendResponse(): done sending message");
+	    XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): done sending message", this);
 	}
     }
     return true;
@@ -1084,7 +1100,7 @@ void Connection::connectionHeader(const char* hdr)
     ObjList* conntokens = String(m_req->getHeader("Connection")).split(',', false);
     for (ObjList* tok = conntokens->skipNull(); tok; tok = tok->skipNext()) {
 	String key = tok->get()->toString();
-	m_connection |= lookup(key.toLower(), s_connTokens);
+	m_connection |= lookup(key.trimSpaces().toLower(), s_connTokens);
     }
     TelEngine::destruct(conntokens);
 }
