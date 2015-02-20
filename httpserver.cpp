@@ -837,7 +837,7 @@ bool Connection::received(unsigned long rlen)
 		m_req = NULL;
 		m_rsp = NULL;
 		code->run();
-		XDebug("HTTPServer",DebugAll,"Connection[%p]: dune with upgraded connection", this);
+		XDebug("HTTPServer",DebugAll,"Connection[%p]: done with upgraded connection", this);
 	    }
 	    return false;
 	}
