@@ -56,6 +56,7 @@ public:
     uint32_t maskingKey() const;
     unsigned char* data();
     const char* data() const;
+    uint16_t payloadWord(size_t offset) const { return (data()[offset] << 8) + data()[offset + 1]; }
     String dump() const;
     void applyMask();
 };
@@ -77,14 +78,19 @@ public:
     bool processUpgradeMsg(Message& msg);
 };
 
+class WebSocketServer;
 class WSDataSource: public DataSource
 {
 public:
-    WSDataSource(Socket* sock)
+    WSDataSource(Socket* sock, WebSocketServer* wss)
 	: m_socket(sock)
+	, m_wss(wss)
 	{ }
+    bool socketReadyRead();
 private:
     Socket* m_socket;
+    u_int32_t m_lastrecv;
+    WebSocketServer* m_wss;
 };
 
 class WSDataConsumer: public DataConsumer
@@ -92,18 +98,23 @@ class WSDataConsumer: public DataConsumer
 public:
     WSDataConsumer(Socket* sock)
 	: m_socket(sock)
+	, m_closed(false)
 	{ }
     virtual unsigned long Consume(const DataBlock& data, unsigned long tStamp, unsigned long flags);
-    void Close(int code);
+    void Close(uint16_t code);
+    bool sendControlFrame(WSHeader::Opcode opcode, const DataBlock& payload);
+    bool closed() const { return m_closed; }
 protected:
     bool sendData(const void* data, unsigned int length);
 private:
     Socket* m_socket;
     Mutex m_mutex;
+    bool m_closed;
 };
 
 class WebSocketServer : public RefObject, public Runnable
 {
+    friend class WSDataSource;
 public:
     WebSocketServer();
     ~WebSocketServer();
@@ -112,6 +123,9 @@ public: // GenObject
     void* getObject(const String& name) const;
 public: // Runnable
     virtual void run();
+protected:
+    void gotClosePacket(int code, String reason);
+    void gotPingPacket(DataBlock& b);
 private:
     Socket* m_socket;
     NamedList m_headers;
@@ -349,6 +363,55 @@ bool WebSocketModule::processUpgradeMsg(Message& msg)
 /**
  * WSDataSource
  */
+bool WSDataSource::socketReadyRead()
+{
+    DataBlock rbuf(NULL, 1024);
+    int readsize = m_socket->readData(rbuf.data(), rbuf.length());
+    if (!readsize) {
+	Debug("websocket",DebugInfo,"Socket condition EOF on %d",m_socket->handle());
+	return false;
+    }
+    else if (readsize > 0) {
+	m_lastrecv = Time::secNow();
+	WSHeader* d = reinterpret_cast<WSHeader*>(rbuf.data());
+	XDebug(&plugin, DebugAll, "Got WebSocket packet: %s", d->dump().c_str());
+	if (d->mask())
+	    d->applyMask();
+	DataBlock b(d->data(), d->payloadLength());
+	String s;
+	s.hexify(b.data(), b.length(), ' ');
+	XDebug(&plugin, DebugAll, "WebSocket packet payload: %s = '%s'", s.c_str(), String((const char*)b.data(), b.length()).c_str());
+
+#if 0
+	Thread::sleep(1);
+	String r("Hellow, world!");
+	m_dc->Consume(DataBlock(const_cast<char*>(r.c_str()), r.length()), 0UL, 0UL);
+	Thread::sleep(1);
+	m_dc->Close(1000);
+	Thread::sleep(1);
+#else
+	switch (d->opcode()) {
+	case WSHeader::Text:
+	case WSHeader::Binary:
+	    Forward(b, 0UL, 0UL);
+	    break;
+	case WSHeader::Close:
+	    m_wss->gotClosePacket(d->payloadLength() >= 2 ? d->payloadWord(0) : 1005, d->payloadLength() > 2 ? String((const char*)b.data() + 2, d->payloadLength() - 2) : String::empty());
+	    break;
+	case WSHeader::Ping:
+	    m_wss->gotPingPacket(b);
+	    break;
+	default:
+	    break;
+	}
+#endif
+    }
+    else if (!m_socket->canRetry()) {
+	Debug("websocket",DebugWarn,"Socket read error %d on %d",errno,m_socket->handle());
+	return false;
+    }
+    return true;
+}
 
 /**
  * WSDataConsumer
@@ -368,18 +431,28 @@ unsigned long WSDataConsumer::Consume(const DataBlock& data, unsigned long tStam
     return 0;
 }
 
-void WSDataConsumer::Close(int code)
+void WSDataConsumer::Close(uint16_t code)
+{
+    DataBlock ec;
+    ec.resize(2);
+    ((unsigned char*)ec.data())[0] = ((unsigned char*)&code)[1];
+    ((unsigned char*)ec.data())[1] = ((unsigned char*)&code)[0];
+    if (sendControlFrame(WSHeader::Close, ec))
+	m_socket->shutdown(false, true);
+    m_closed = true;
+}
+bool WSDataConsumer::sendControlFrame(WSHeader::Opcode opcode, const DataBlock& payload)
 {
     WSHeader z;
     z.fin(true);
     z.rsv(0);
-    z.opcode(WSHeader::Close);
+    z.opcode(opcode);
     z.mask(false);
-    z.payloadLength(2);
-    z.data()[0] = ((unsigned char*)&code)[1];
-    z.data()[1] = ((unsigned char*)&code)[0];
+    z.payloadLength(payload.length());
+    DataBlock b(&z, z.headerLength());
+    b.append(payload);
     XDebug(&plugin, DebugAll, "Sending WebSocket control packet: %s", z.dump().c_str());
-    sendData(&z, z.fullLength());
+    return sendData(b.data(), b.length());
 }
 
 bool WSDataConsumer::sendData(const void* data, unsigned int length)
@@ -460,8 +533,9 @@ bool WebSocketServer::init(Message& msg)
     m_extension = msg.getValue("hdr_Sec-WebSocket-Extensions");
     m_socket = sock;
     m_headers = msg;
-    m_ds = new WSDataSource(sock);
+    m_ds = new WSDataSource(sock, this);
     m_dc = new WSDataConsumer(sock);
+    m_ds->attach(m_dc);
     return true;
 }
 
@@ -471,7 +545,7 @@ void WebSocketServer::run()
     while (m_socket && m_socket->valid()) {
 	bool readok = false;
 	bool error = false;
-	if (m_socket->select(&readok, 0, 0, 100000)) {
+	if (m_socket->select(&readok, 0, 0, 1000000)) {
 	    if (error) {
 		Debug("websocket",DebugInfo,"Socket exception condition on %d",m_socket->handle());
 		return;
@@ -480,33 +554,8 @@ void WebSocketServer::run()
 		Debug("websocket",DebugAll, "Timeout waiting for socket %d", m_socket->handle());
 		return;
 	    }
-	    DataBlock rbuf(NULL, 1024);
-	    int readsize = m_socket->readData(rbuf.data(), rbuf.length());
-	    if (!readsize) {
-		Debug("websocket",DebugInfo,"Socket condition EOF on %d",m_socket->handle());
+	    if (! m_ds->socketReadyRead())
 		return;
-	    }
-	    else if (readsize > 0) {
-		WSHeader* d = reinterpret_cast<WSHeader*>(rbuf.data());
-		XDebug(&plugin, DebugAll, "Got WebSocket packet: %s", d->dump().c_str());
-		if (d->mask())
-		    d->applyMask();
-		DataBlock b(d->data(), d->payloadLength());
-		String s;
-		s.hexify(b.data(), b.length(), ' ');
-		XDebug(&plugin, DebugAll, "WebSocket packet payload: %s = '%s'", s.c_str(), String((const char*)b.data(), b.length()).c_str());
-
-		Thread::sleep(1);
-		String r("Hellow, world!");
-		m_dc->Consume(DataBlock(const_cast<char*>(r.c_str()), r.length()), 0UL, 0UL);
-		Thread::sleep(1);
-		m_dc->Close(1000);
-		Thread::sleep(1);
-	    }
-	    else if (!m_socket->canRetry()) {
-		Debug("websocket",DebugWarn,"Socket read error %d on %d",errno,m_socket->handle());
-		return;
-	    }
 	}
 	else if (!m_socket->canRetry()) {
 	    Debug("websocket",DebugWarn,"socket select error %d on %d",errno,m_socket->handle());
@@ -516,6 +565,20 @@ void WebSocketServer::run()
     XDebug(&plugin, DebugAll, "WebSocketServer[%p] run() exit", this);
 }
 
+void WebSocketServer::gotClosePacket(int code, String reason)
+{
+    XDebug(&plugin, DebugAll, "WebSocketServer[%p] gotClosePacket(%d, %s)", this, code, reason.c_str());
+    if (m_dc->closed())
+	m_socket->shutdown(true, true);
+    else
+	m_dc->Close(1000);
+}
+
+void WebSocketServer::gotPingPacket(DataBlock& b)
+{
+    XDebug(&plugin, DebugAll, "WebSocketServer[%p] gotPingPacket(%d bytes of payload)", this, b.length());
+    m_dc->sendControlFrame(WSHeader::Pong, b);
+}
 
 }; // anonymous namespace
 
