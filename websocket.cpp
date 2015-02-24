@@ -3,7 +3,7 @@
  * websocket.cpp
  * This file is part of the YATE Project http://YATE.null.ro
  *
- * Filesystem access for HTTP server module
+ * WebSocket protocol (RFC6455) implementation.
  *
  * Yet Another Telephony Engine - a fully featured software PBX and IVR
  * Copyright (C) 2004-2014 Null Team
@@ -83,10 +83,15 @@ class WSDataSource: public DataSource
 {
 public:
     WSDataSource(Socket* sock, WebSocketServer* wss)
-	: m_socket(sock)
+	: DataSource("data")
+	, m_socket(sock)
 	, m_wss(wss)
-	{ }
+	{ m_lastrecv = Time::secNow(); }
     bool socketReadyRead();
+    u_int32_t delay() const
+    {
+	return Time::secNow() - m_lastrecv;
+    }
 private:
     Socket* m_socket;
     u_int32_t m_lastrecv;
@@ -97,7 +102,8 @@ class WSDataConsumer: public DataConsumer
 {
 public:
     WSDataConsumer(Socket* sock)
-	: m_socket(sock)
+	: DataConsumer("data")
+	, m_socket(sock)
 	, m_closed(false)
 	{ }
     virtual unsigned long Consume(const DataBlock& data, unsigned long tStamp, unsigned long flags);
@@ -112,7 +118,7 @@ private:
     bool m_closed;
 };
 
-class WebSocketServer : public RefObject, public Runnable
+class WebSocketServer : public DataEndpoint, public Runnable
 {
     friend class WSDataSource;
 public:
@@ -133,13 +139,13 @@ private:
     String m_extension;
     WSDataSource* m_ds;
     WSDataConsumer* m_dc;
+    u_int32_t m_timeout, m_ping;
 };
 
 /**
  * Local data
  */
 static WebSocketModule plugin;
-static Configuration s_cfg;
 
 /**
  * WSHeader
@@ -303,9 +309,6 @@ void WebSocketModule::initialize()
 {
     static bool notFirst = false;
     Output("Initializing module WebSocket");
-    s_cfg = Engine::configFile("websocket");
-    s_cfg.load();
-
     if (notFirst)
 	return;
     notFirst = true;
@@ -347,17 +350,19 @@ bool WebSocketModule::processUpgradeMsg(Message& msg)
 	return false;
     }
     key += "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-    SHA1 hash(key.trimSpaces());
-    Base64 b64(const_cast<unsigned char*>(hash.rawDigest()), hash.hashLength(), true);
-    String response;
-    b64.encode(response);
-    msg.setParam("ohdr_Sec-WebSocket-Accept", response);
 
     WebSocketServer* wss = new WebSocketServer();
-    wss->init(msg);
-    msg.userData(wss);
+    bool ok = wss->init(msg);
+    if (ok) {
+	SHA1 hash(key.trimSpaces());
+	Base64 b64(const_cast<unsigned char*>(hash.rawDigest()), hash.hashLength(), true);
+	String response;
+	b64.encode(response);
+	msg.setParam("ohdr_Sec-WebSocket-Accept", response);
+	msg.userData(wss);
+    }
     wss->deref();
-    return true;
+    return ok;
 }
 
 /**
@@ -382,14 +387,6 @@ bool WSDataSource::socketReadyRead()
 	s.hexify(b.data(), b.length(), ' ');
 	XDebug(&plugin, DebugAll, "WebSocket packet payload: %s = '%s'", s.c_str(), String((const char*)b.data(), b.length()).c_str());
 
-#if 0
-	Thread::sleep(1);
-	String r("Hellow, world!");
-	m_dc->Consume(DataBlock(const_cast<char*>(r.c_str()), r.length()), 0UL, 0UL);
-	Thread::sleep(1);
-	m_dc->Close(1000);
-	Thread::sleep(1);
-#else
 	switch (d->opcode()) {
 	case WSHeader::Text:
 	case WSHeader::Binary:
@@ -404,7 +401,6 @@ bool WSDataSource::socketReadyRead()
 	default:
 	    break;
 	}
-#endif
     }
     else if (!m_socket->canRetry()) {
 	Debug("websocket",DebugWarn,"Socket read error %d on %d",errno,m_socket->handle());
@@ -441,6 +437,7 @@ void WSDataConsumer::Close(uint16_t code)
 	m_socket->shutdown(false, true);
     m_closed = true;
 }
+
 bool WSDataConsumer::sendControlFrame(WSHeader::Opcode opcode, const DataBlock& payload)
 {
     WSHeader z;
@@ -502,7 +499,8 @@ bool WSDataConsumer::sendData(const void* data, unsigned int length)
  * WebSocketServer
  */
 WebSocketServer::WebSocketServer()
-    : m_socket(NULL)
+    : DataEndpoint(NULL, "websocket")
+    , m_socket(NULL)
     , m_headers("WebSocketHeaders")
 {
     XDebug(&plugin, DebugAll, "WebSocketServer[%p] created", this);
@@ -515,12 +513,11 @@ WebSocketServer::~WebSocketServer()
 
 void* WebSocketServer::getObject(const String& name) const
 {
-    XDebug(&plugin, DebugAll, "WebSocketServer[%p]::getObject(%s)", this, name.c_str());
     if (name == YATOM("Runnable"))
 	return static_cast<Runnable*>(const_cast<WebSocketServer*>(this));
     if (name == YATOM("WebSocketServer"))
 	return const_cast<WebSocketServer*>(this);
-    return RefObject::getObject(name);
+    return DataEndpoint::getObject(name);
 }
 
 bool WebSocketServer::init(Message& msg)
@@ -533,10 +530,31 @@ bool WebSocketServer::init(Message& msg)
     m_extension = msg.getValue("hdr_Sec-WebSocket-Extensions");
     m_socket = sock;
     m_headers = msg;
-    m_ds = new WSDataSource(sock, this);
-    m_dc = new WSDataConsumer(sock);
-    m_ds->attach(m_dc);
-    return true;
+
+    Message m("websocket.init");
+    m.userData(this);
+    m.copyParams(msg, "address,local,server,uri");
+    m.setParam("protocol", m_protocol);
+    if (Engine::dispatch(m)) {
+	DataEndpoint* de = static_cast<DataEndpoint*>(m.userObject("DataEndpoint"));
+	if (! de) {
+	    Debug("websocket",DebugWarn,"No DataEndpoint");
+	    return false;
+	}
+	String protocol = m.retValue();
+	if (protocol.length())
+	    msg.setParam("ohdr_Sec-WebSocket-Protocol", protocol);
+	m_ds = new WSDataSource(sock, this);
+	m_dc = new WSDataConsumer(sock);
+	setSource(m_ds);
+	setConsumer(m_dc);
+	connect(de);
+
+	m_timeout = msg.getIntValue("timeout", 0);
+	m_ping = msg.getIntValue("ping", 30);
+	return true;
+    }
+    return false;
 }
 
 void WebSocketServer::run()
@@ -544,24 +562,25 @@ void WebSocketServer::run()
     XDebug(&plugin, DebugAll, "WebSocketServer[%p] run() entry", this);
     while (m_socket && m_socket->valid()) {
 	bool readok = false;
-	bool error = false;
 	if (m_socket->select(&readok, 0, 0, 1000000)) {
-	    if (error) {
-		Debug("websocket",DebugInfo,"Socket exception condition on %d",m_socket->handle());
-		return;
-	    }
 	    if (!readok) {
-		Debug("websocket",DebugAll, "Timeout waiting for socket %d", m_socket->handle());
-		return;
+		u_int32_t delay = m_ds->delay();
+		if (m_timeout && delay > m_timeout) {
+		    Debug("websocket",DebugAll, "Timeout waiting for data on socket %d", m_socket->handle());
+		    break;
+		}
+		else if (m_ping && delay >= m_ping && !m_dc->closed())
+		    m_dc->sendControlFrame(WSHeader::Ping, DataBlock());
 	    }
 	    if (! m_ds->socketReadyRead())
-		return;
+		break;
 	}
 	else if (!m_socket->canRetry()) {
 	    Debug("websocket",DebugWarn,"socket select error %d on %d",errno,m_socket->handle());
-	    return;
+	    break;
 	}
     }
+    disconnect();
     XDebug(&plugin, DebugAll, "WebSocketServer[%p] run() exit", this);
 }
 

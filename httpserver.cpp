@@ -294,7 +294,7 @@ private:
     Socket* m_socket;
     DataBlock m_rcvBuffer;
     DataBlock m_sndBuffer;
-    String m_address;
+    String m_address, m_local;
     RefPointer<HTTPServerListener> m_listener;
     RefPointer<YHttpRequest> m_req;
     RefPointer<YHttpResponse> m_rsp;
@@ -686,6 +686,9 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
 	m_maxSendChunkSize = 10;
     else if (m_maxSendChunkSize > 65535)
 	m_maxSendChunkSize = 65535; // need to fit into 4 hex digits
+    SocketAddr loc;
+    m_socket->getSockName(loc);
+    m_local = loc.addr();
 }
 
 Connection::~Connection()
@@ -800,13 +803,16 @@ bool Connection::received(unsigned long rlen)
 
     // Remove processed part from input buffer
     m_rcvBuffer.cut(-bodyOffs); // now m_rcvBuffer holds body's beginning
+    bool bodyExpected = m_req->bodyExpected();
+
 
     Message m("http.route");
     m.userData(this);
     m.addParam("server", m_listener->cfg().c_str());
     m.addParam("address", m_address);
-    m.addParam("local", m_listener->address());
+    m.addParam("local", m_local);
     m.addParam("keepalive", String::boolText(m_keepalive));
+    m.addParam("reqbody", String::boolText(bodyExpected));
     m_req->fill(m);
     if (Engine::dispatch(m)) {
 	TelEngine::String rv = m.retValue();
@@ -867,7 +873,7 @@ bool Connection::received(unsigned long rlen)
     }
 
     // read request body finally
-    if (m_req->bodyExpected() && ! readRequestBody(m))
+    if (bodyExpected && ! readRequestBody(m))
 	return false; // error response is already sent in readRequestBody()
 
     m_rsp = new YHttpResponse(this);

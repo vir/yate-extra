@@ -47,7 +47,7 @@ class YWebServerModule : public Module
 {
     enum {
 	HttpRequest = Private,
-	HttpReqData,
+	HttpReqData = (Private << 1),
     };
 protected:
     virtual bool received(Message &msg, int id);
@@ -154,6 +154,8 @@ static TelEngine::String guessHandler(const TelEngine::String path)
 
 bool WebServer::received(Message &msg, bool reqdata)
 {
+    if (reqdata && ! msg.getBoolValue("reqbody"))
+	return false;
     String handler = msg.getValue("handler");
     String path = msg.getValue("path", m_root + msg.getParam("uri"));
     if (! handler.length())
@@ -244,8 +246,8 @@ void YWebServerModule::initialize()
     if (notFirst)
 	return;
     notFirst = true;
-    installRelay(HttpRequest, "http.serve", 100);
-    installRelay(HttpReqData, "http.preserve", 100);
+    installRelay(HttpRequest, "http.serve", 150);
+    installRelay(HttpReqData, "http.preserve", 150);
     setup();
 }
 
