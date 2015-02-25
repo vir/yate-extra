@@ -13,23 +13,27 @@ See comments inside for more info.
 
 
 ## Operation
-Upon receiving of HTTP request, module issues several messages, and, depending
-on results, produces response.
+Upon receiving of HTTP request, module issues several messages, and depending
+on results produces response.
 
 First of all, after parsin of request headers, __http.route__ message is
 dispatched with the following parameters:
 
 | Parameter | Description                                    |
 |-----------|------------------------------------------------|
-| server    | name of listener (section of [httpserver.conf](../httpserver.conf)) serving request. |
-| address   | remote address of client connection in form of ip:port |
+| server    | name of listener (section of [httpserver.conf](../httpserver.conf)) serving request |
+| address   | remote address of client connection in form of _ip_:_port_ |
 | local     | local address of client connection             |
-| keepalive | boolean value, indication that connection will be keeped open or cloased after processiong of current request |
-| reqbody   | boolean value, indication that request body is expected in this request |
+| keepalive | boolean value, indicating that connection will not be closed after processiong of this request |
+| reqbody   | boolean value, indicating that request body is expected in this request |
+| version   | HTTP version                                   |
+| method    | HTTP request method                            |
+| uri       | request uri string                             |
 | hdr_Xxxxx | incoming request headers                       |
 
 If this __http.route__ message is handled, it's return value is added to
-subsequent messages as _handler_ parameter.
+subsequent messages as _handler_ parameter. All other paramters are passed to
+all subsequent messages unchanged.
 
 If connection upgrade is offered, __http.upgrade__ message is dispatched. If
 it is handled, "101 Switching protocols" response is produced and then run()
@@ -49,7 +53,7 @@ used, it's content is added as _content_ paramter. It that message is not
 handled, "404 Not found" error response is produced and client connection is
 closed.
 
-Handled __http.serve__ message is used to cinstruct HTTP response. Status code
+Handled __http.serve__ message is used to construct HTTP response. Status code
 is taken from _status_ parameter and response headers are build trom _ohdr*_
 parameters.
 
