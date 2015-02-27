@@ -32,12 +32,12 @@ namespace { // anonymous
 class WebServer: public GenObject
 {
 public:
-    WebServer(const String& name, const String& root);
+    WebServer(const String& name);
     ~WebServer();
     bool received(Message &msg, bool reqdata);
     static String guessContentType(const String& path);
 private:
-    String m_name, m_root;
+    String m_name;
 };
 
 /**
@@ -62,7 +62,7 @@ private:
 class Servant : public RefObject
 {
 public:
-    Servant(const String& path);
+    Servant(const String& path, NamedList* cfg);
     ~Servant();
     bool received(Message& msg);
 public: // GenObject
@@ -70,12 +70,13 @@ public: // GenObject
 private:
     String m_path;
     File m_fh;
+    NamedList* m_cfg;
 };
 
 class DirectoryHandler : public RefObject, public Stream
 {
 public:
-    DirectoryHandler(const String& path);
+    DirectoryHandler(const String& path, NamedList* cfg);
     ~DirectoryHandler();
     bool received(Message& msg);
 public: // GenObject
@@ -88,6 +89,7 @@ public: // Stream
 private:
     String m_path;
     MemoryStream m_file;
+    NamedList* m_cfg;
 };
 
 /**
@@ -99,11 +101,10 @@ static Configuration s_cfg;
 /**
  * WebServer
  */
-WebServer::WebServer(const String& name, const String& root)
+WebServer::WebServer(const String& name)
     : m_name(name)
-    , m_root(root)
 {
-    Debug(&plugin, DebugAll, "WebServer '%s' created, document root: '%s'", m_name.c_str(), m_root.c_str());
+    Debug(&plugin, DebugAll, "WebServer '%s' created", m_name.c_str());
 }
 
 WebServer::~WebServer()
@@ -152,43 +153,81 @@ static TelEngine::String guessHandler(const TelEngine::String path)
     return "error 500";
 }
 
+static void cleanupUri(String& uri)
+{
+    int idx;
+    while ((idx = uri.find("/../")) >= 0)
+	uri = uri.substr(0, idx) + uri.substr(idx + 3);
+    while ((idx = uri.find("/./")) >= 0)
+	uri = uri.substr(0, idx) + uri.substr(idx + 2);
+    while ((idx = uri.find("//")) >= 0)
+	uri = uri.substr(0, idx) + uri.substr(idx + 1);
+}
+
 bool WebServer::received(Message &msg, bool reqdata)
 {
     if (reqdata && ! msg.getBoolValue("reqbody"))
 	return false;
-    String handler = msg.getValue("handler");
-    String path = msg.getValue("path", m_root + msg.getParam("uri"));
-    if (! handler.length())
+    if (reqdata) // no handlers below accept request data
+	return false;
+
+    /* prepare configuration parameters list */
+    NamedList* cfg = new NamedList("params");
+    NamedList* nl;
+    if ((nl = s_cfg.getSection(YSTRING("default"))))
+	cfg->copyParams(*nl);
+    String server = msg.getValue("server");
+    if ((nl = s_cfg.getSection(server)))
+	cfg->copyParams(*nl);
+    if ((nl = s_cfg.getSection(msg.getValue("conf"))))
+	cfg->copyParams(*nl);
+    cfg->copyParams(msg);
+
+    String handler = msg.getValue("handler", "auto");
+    String path = msg.getValue("path");
+    if (! path.length()) {
+	String uri = msg.getParam("uri");
+	cleanupUri(uri);
+	path = cfg->getValue(YSTRING("root"), "/var/www") + uri;
+    }
+    if (handler == YSTRING("auto"))
 	handler = guessHandler(path);
 
-    Debug(&plugin, DebugAll, "WebServer '%s' is serving resource '%s', handler is '%s'", m_name.c_str(), path.c_str(), handler.c_str());
+    String dumpcfg;
+    cfg->dump(dumpcfg, ", ");
+    Debug(&plugin, DebugAll, "WebServer '%s' is serving resource '%s', handler is '%s', cfg: %s", m_name.c_str(), path.c_str(), handler.c_str(), dumpcfg.c_str());
 
     if (handler == YSTRING("file")) {
 	Servant* s = reinterpret_cast<Servant*>(msg.userObject("Servant"));
 	if(! s)
-	    s = new Servant(path);
+	    s = new Servant(path, cfg);
+	else
+	    TelEngine::destruct(cfg);
 	return s->received(msg);
     }
     if (handler == YSTRING("directory")) {
-	if (reqdata)
-	    return false;
 	DirectoryHandler* s = reinterpret_cast<DirectoryHandler*>(msg.userObject("DirectoryHandler"));
 	if(! s)
-	    s = new DirectoryHandler(path);
+	    s = new DirectoryHandler(path, cfg);
+	else
+	    TelEngine::destruct(cfg); // noone need it
 	return s->received(msg);
     }
+    TelEngine::destruct(cfg); // noone need it
     if (handler.startSkip("error")) {
 	msg.setParam("status", handler);
 	return true;
     }
     if (handler.startSkip("redirect")) {
-	msg.setParam("status", "302");
+	const char* status = msg.getValue("status");
+	if (!status || *status != '3')
+	    msg.setParam("status", "302");
 	if (handler.find("://") < 0)
 	    handler = YSTRING("http://") + msg.getParam("hdr_Host") + handler;
 	msg.setParam("ohdr_Location", handler);
 	return true;
     }
-    if (handler == YSTRING("bulkfile") && ! reqdata) {
+    if (handler == YSTRING("bulkfile")) {
 	if(YSTRING("GET") != msg.getValue("method")) {
 	    msg.setParam("status", "405");
 	    return true;
@@ -242,7 +281,7 @@ void YWebServerModule::initialize()
     s_cfg.load();
 
     TelEngine::destruct(m_server);
-    m_server = new WebServer("WebServer", s_cfg.getValue("general", "document_root", "/var/www"));
+    m_server = new WebServer("WebServer");
     if (notFirst)
 	return;
     notFirst = true;
@@ -267,8 +306,9 @@ bool YWebServerModule::received(Message &msg, int id)
 /**
  * Servant
  */
-Servant::Servant(const String& path)
+Servant::Servant(const String& path, NamedList* cfg)
     : m_path(path)
+    , m_cfg(cfg)
 {
     XDebug(&plugin, DebugAll, "Servant %p created, path: '%s'", this, m_path.c_str());
 }
@@ -276,6 +316,7 @@ Servant::Servant(const String& path)
 Servant::~Servant()
 {
     XDebug(&plugin, DebugAll, "Servant %p destroyed, path: '%s'", this, m_path.c_str());
+    TelEngine::destruct(m_cfg);
 }
 
 void* Servant::getObject(const String& name) const
@@ -330,18 +371,20 @@ bool Servant::received(Message& msg)
  * DirectoryHandler
  */
 
-DirectoryHandler::DirectoryHandler(const String& path)
+DirectoryHandler::DirectoryHandler(const String& path, NamedList* cfg)
     : m_path(path)
+    , m_cfg(cfg)
 {
 }
 
 DirectoryHandler::~DirectoryHandler()
 {
+    TelEngine::destruct(m_cfg);
 }
 
 bool DirectoryHandler::received(Message& msg)
 {
-    if (! msg.getBoolValue("dirlist", false)) {
+    if (! m_cfg->getBoolValue("dirlist", false)) {
 	msg.setParam("status", "403");
 	msg.retValue() = "Directory listing denied";
 	return true;
