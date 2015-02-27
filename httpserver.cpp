@@ -1050,6 +1050,7 @@ bool Connection::sendResponse(YHttpResponse& rsp)
 	    if (! chunked && to_send < m_maxSendChunkSize)
 		to_read = to_send;
 	    int rd = rsp.bodyStream()->readData(read_ptr, to_read);
+	    XDebug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse(): got %d from rsp.bodyStream()->readData(%p, %d)", this, rd, read_ptr, to_read);
 	    if (! rd) {
 		if (! chunked) {
 		    Debug("HTTPServer",DebugInfo,"Connection[%p]::sendResponse: Socket %d: got EOF, while %u bytes more expected",this,m_socket->handle(),to_send);
@@ -1059,7 +1060,7 @@ bool Connection::sendResponse(YHttpResponse& rsp)
 		break;
 	    }
 	    if (chunked) {
-		snprintf((char*)m_sndBuffer.data(), 6, "%08x", rd);
+		snprintf((char*)m_sndBuffer.data(), 6, "%04x", rd);
 		*m_sndBuffer.data(4) = '\r';
 		*m_sndBuffer.data(5) = '\n';
 		read_ptr[rd] = '\r';
