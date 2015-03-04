@@ -82,20 +82,19 @@ class WebSocketServer;
 class WSDataSource: public DataSource
 {
 public:
-    WSDataSource(Socket* sock, WebSocketServer* wss)
-	: DataSource("data")
-	, m_socket(sock)
-	, m_wss(wss)
-	{ m_lastrecv = Time::secNow(); }
+    WSDataSource(Socket* sock, WebSocketServer* wss);
     bool socketReadyRead();
     u_int32_t delay() const
     {
 	return Time::secNow() - m_lastrecv;
     }
+protected:
+    WSHeader* decodeFrame(DataBlock& data);
 private:
     Socket* m_socket;
     u_int32_t m_lastrecv;
     WebSocketServer* m_wss;
+    DataBlock m_buf;
 };
 
 class WSDataConsumer: public DataConsumer
@@ -368,6 +367,29 @@ bool WebSocketModule::processUpgradeMsg(Message& msg)
 /**
  * WSDataSource
  */
+WSDataSource::WSDataSource(Socket* sock, WebSocketServer* wss)
+    : DataSource("data")
+    , m_socket(sock)
+    , m_wss(wss)
+{
+    m_lastrecv = Time::secNow();
+}
+WSHeader* WSDataSource::decodeFrame(DataBlock& data)
+{
+    if (m_buf.length() < 2)
+	return NULL;
+    WSHeader* d = reinterpret_cast<WSHeader*>(m_buf.data());
+    if (m_buf.length() < d->headerLength() || m_buf.length() < d->fullLength())
+	return NULL;
+    XDebug(&plugin, DebugAll, "Got WebSocket packet: %s", d->dump().c_str());
+    if (d->mask())
+	d->applyMask();
+    data.assign(d->data(), d->payloadLength());
+    String s;
+    s.hexify(data.data(), data.length(), ' ');
+    XDebug(&plugin, DebugAll, "WebSocket packet payload: %s = '%s'", s.c_str(), String((const char*)data.data(), data.length()).c_str());
+    return d;
+}
 bool WSDataSource::socketReadyRead()
 {
     DataBlock rbuf(NULL, 1024);
@@ -377,35 +399,34 @@ bool WSDataSource::socketReadyRead()
 	return false;
     }
     else if (readsize > 0) {
+	m_buf.append(rbuf.data(), readsize);
 	m_lastrecv = Time::secNow();
-	WSHeader* d = reinterpret_cast<WSHeader*>(rbuf.data());
-	XDebug(&plugin, DebugAll, "Got WebSocket packet: %s", d->dump().c_str());
-	if (d->mask())
-	    d->applyMask();
-	DataBlock b(d->data(), d->payloadLength());
-	String s;
-	s.hexify(b.data(), b.length(), ' ');
-	XDebug(&plugin, DebugAll, "WebSocket packet payload: %s = '%s'", s.c_str(), String((const char*)b.data(), b.length()).c_str());
-
-	switch (d->opcode()) {
-	case WSHeader::Text:
-	case WSHeader::Binary:
-	    Forward(b, Time(), 0UL);
-	    break;
-	case WSHeader::Close:
-	    m_wss->gotClosePacket(d->payloadLength() >= 2 ? d->payloadWord(0) : 1005, d->payloadLength() > 2 ? String((const char*)b.data() + 2, d->payloadLength() - 2) : String::empty());
-	    break;
-	case WSHeader::Ping:
-	    m_wss->gotPingPacket(b);
-	    break;
-	default:
-	    break;
-	}
     }
     else if (!m_socket->canRetry()) {
 	Debug("websocket",DebugWarn,"Socket read error %d on %d",errno,m_socket->handle());
 	return false;
     }
+
+    DataBlock data;
+    WSHeader* d = decodeFrame(data);
+    if (! d)
+	return ! m_buf.null();
+
+    switch (d->opcode()) {
+    case WSHeader::Text:
+    case WSHeader::Binary:
+	Forward(data, Time(), 0UL);
+	break;
+    case WSHeader::Close:
+	m_wss->gotClosePacket(d->payloadLength() >= 2 ? d->payloadWord(0) : 1005, d->payloadLength() > 2 ? String((const char*)data.data() + 2, d->payloadLength() - 2) : String::empty());
+	break;
+    case WSHeader::Ping:
+	m_wss->gotPingPacket(data);
+	break;
+    default:
+	break;
+    }
+    m_buf.cut(-d->fullLength());
     return true;
 }
 
