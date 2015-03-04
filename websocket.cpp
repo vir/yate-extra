@@ -390,7 +390,7 @@ bool WSDataSource::socketReadyRead()
 	switch (d->opcode()) {
 	case WSHeader::Text:
 	case WSHeader::Binary:
-	    Forward(b, 0UL, 0UL);
+	    Forward(b, Time(), 0UL);
 	    break;
 	case WSHeader::Close:
 	    m_wss->gotClosePacket(d->payloadLength() >= 2 ? d->payloadWord(0) : 1005, d->payloadLength() > 2 ? String((const char*)b.data() + 2, d->payloadLength() - 2) : String::empty());
@@ -533,7 +533,7 @@ bool WebSocketServer::init(Message& msg)
 
     Message m("websocket.init");
     m.userData(this);
-    m.copyParams(msg, "address,local,server,uri");
+    m.copyParams(msg, "address,ip_host,ip_port,local,local_host,local_port,server,uri");
     m.setParam("protocol", m_protocol);
     if (Engine::dispatch(m)) {
 	DataEndpoint* de = static_cast<DataEndpoint*>(m.userObject("DataEndpoint"));
