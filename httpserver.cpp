@@ -239,7 +239,7 @@ public:
 private:
     void run();
     bool initSocket();
-    Connection* checkCreate(Socket* sock, const char* addr);
+    Connection* checkCreate(Socket* sock, const SocketAddr& sa);
     NamedList m_cfg;
     Socket m_socket;
     String m_address;
@@ -272,14 +272,14 @@ private:
     void connectionHeader(const char* hdr);
     String connectionHeader();
 public:
-    Connection(Socket* sock, const char* addr, HTTPServerListener* listener);
+    Connection(Socket* sock, HTTPServerListener* listener);
     ~Connection();
 
     virtual void* getObject (const String& name) const;
     virtual void run();
     void runConnection();
     inline const String& address() const
-	{ return m_address; }
+	{ return m_remote.addr(); }
     inline const NamedList& cfg() const
 	{ return m_listener->cfg(); }
     void checkTimer(u_int64_t time);
@@ -294,7 +294,7 @@ private:
     Socket* m_socket;
     DataBlock m_rcvBuffer;
     DataBlock m_sndBuffer;
-    String m_address, m_local;
+    SocketAddr m_local, m_remote;
     RefPointer<HTTPServerListener> m_listener;
     RefPointer<YHttpRequest> m_req;
     RefPointer<YHttpResponse> m_rsp;
@@ -600,14 +600,13 @@ void HTTPServerListener::run()
 	    continue;
 	} else {
 	    String addr(sa.host());
-	    addr << ":" << sa.port();
-	    if (!checkCreate(as,addr))
-		Debug("HTTPServer",DebugWarn,"Connection rejected for %s",addr.c_str());
+	    if (!checkCreate(as,sa))
+		Debug("HTTPServer",DebugWarn,"Connection rejected for %s",sa.addr().c_str());
 	}
     }
 }
 
-Connection* HTTPServerListener::checkCreate(Socket* sock, const char* addr)
+Connection* HTTPServerListener::checkCreate(Socket* sock, const SocketAddr& sa)
 {
     if (!sock->valid()) {
 	delete sock;
@@ -645,8 +644,8 @@ Connection* HTTPServerListener::checkCreate(Socket* sock, const char* addr)
     }
     // should check IP address here
     Output("Remote%s connection from %s to %s",
-	(secure ? " secure" : ""),addr,m_address.c_str());
-    Connection* conn = new Connection(sock,addr,this);
+	(secure ? " secure" : ""),sa.addr().c_str(),m_address.c_str());
+    Connection* conn = new Connection(sock,this);
     if (conn->error()) {
 	conn->deref();
 	return 0;
@@ -667,10 +666,10 @@ TokenDict Connection::s_connTokens[] = {
     { 0, 0 },
 };
 
-Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* listener)
+Connection::Connection(Socket* sock, HTTPServerListener* listener)
     : Thread("HTTPServer connection"),
       m_socket(sock),
-      m_address(addr), m_listener(listener),
+      m_listener(listener),
       m_keepalive(false),
       m_maxRequests(0),
       m_timeout(10)
@@ -678,6 +677,8 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
     s_mutex.lock();
     s_connList.append(this);
     s_mutex.unlock();
+    m_socket->getSockName(m_local);
+    m_socket->getPeerName(m_remote);
     m_maxRequests = cfg().getIntValue("maxrequests", 0);
     m_maxReqBody = cfg().getIntValue("maxreqbody", 10 * 1024);
     m_timeout = cfg().getIntValue("timeout", 10);
@@ -686,9 +687,6 @@ Connection::Connection(Socket* sock, const char* addr, HTTPServerListener* liste
 	m_maxSendChunkSize = 10;
     else if (m_maxSendChunkSize > 65535)
 	m_maxSendChunkSize = 65535; // need to fit into 4 hex digits
-    SocketAddr loc;
-    m_socket->getSockName(loc);
-    m_local = loc.addr();
 }
 
 Connection::~Connection()
@@ -696,7 +694,7 @@ Connection::~Connection()
     s_mutex.lock();
     s_connList.remove(this,false);
     s_mutex.unlock();
-    Output("Closing connection to %s",m_address.c_str());
+    Output("Closing connection to %s",m_remote.addr().c_str());
     delete m_socket;
     m_socket = 0;
 }
@@ -809,8 +807,12 @@ bool Connection::received(unsigned long rlen)
     Message m("http.route");
     m.userData(this);
     m.addParam("server", m_listener->cfg().c_str());
-    m.addParam("address", m_address);
-    m.addParam("local", m_local);
+    m.addParam("address", m_remote.addr());
+    m.addParam("ip_host", m_remote.host());
+    m.addParam("ip_port", String(m_remote.port()));
+    m.addParam("local", m_local.addr());
+    m.addParam("local_host", m_local.host());
+    m.addParam("local_port", String(m_local.port()));
     m.addParam("keepalive", String::boolText(m_keepalive));
     m.addParam("reqbody", String::boolText(bodyExpected));
     m_req->fill(m);
