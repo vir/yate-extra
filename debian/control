@@ -16,6 +16,11 @@ Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Add "Date" header to SIP REGISTER replyes (required for some ip phones).
 
+Package: yate-extra-websocket
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: WebSocket protocol (RFC6455) implementation.
+
 Package: yate-extra-g726codec
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
