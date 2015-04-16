@@ -1,24 +1,13 @@
 
 /**
  * testwebsocket.cpp
- * This file is part of the YATE Project http://YATE.null.ro
  *
  * Test module for websocket interface
+ * Point your browser to http://YA.TE.AD.DR:PORT/ws/test.html
  *
- * Yet Another Telephony Engine - a fully featured software PBX and IVR
- * Copyright (C) 2004-2014 Null Team
- * Author: Marian Podgoreanu
+ * Author: Vasily i. Redkin <vasilyredkin@gmail.com>
  *
- * This software is distributed under multiple licenses;
- * see the COPYING file in the main directory for licensing
- * information for this specific distribution.
- *
- * This use of this software may be subject to additional restrictions.
- * See the LEGAL file in the main directory for details.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * MIT License http://opensource.org/licenses/MIT
  */
 
 #include <yatephone.h>
@@ -57,25 +46,25 @@ class EchoEndpoint: public DataEndpoint
     class DC: public DataConsumer
     {
     public:
-	DC(DS& ds): DataConsumer("data"), m_ds(ds) { }
+	DC(DataSource& ds): DataConsumer("data"), m_ds(ds) { }
 	virtual unsigned long Consume(const DataBlock& data, unsigned long tStamp, unsigned long flags) { return m_ds.Forward(data, tStamp, flags); }
     private:
-	DS& m_ds;
+	DataSource& m_ds;
     };
 public:
-    EchoEndpoint(): m_dc(m_ds)
+    EchoEndpoint()
     {
 	XDebug(DebugAll, "EchoEndpoint[%p] created", this);
-	setSource(&m_ds);
-	setConsumer(&m_dc);
+	setSource(new DS);
+	getSource()->deref();
+	setConsumer(new DC(*getSource()));
+	getConsumer()->deref();
     }
     ~EchoEndpoint()
     {
 	XDebug(DebugAll, "EchoEndpoint[%p] destroyed", this);
     }
 private:
-    DS m_ds;
-    DC m_dc;
 };
 
 /**
@@ -106,8 +95,8 @@ void TestWebSocketModule::initialize()
 	return;
     notFirst = true;
     setup();
-    installRelay(HttpRequest, "http.serve", 100);
-    installRelay(WebSocketInit, "websocket.init", 100);
+    installRelay(HttpRequest, "http.serve", 50);
+    installRelay(WebSocketInit, "websocket.init", 50);
 }
 
 bool TestWebSocketModule::received(Message &msg, int id)
