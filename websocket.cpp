@@ -409,8 +409,10 @@ bool WSDataSource::socketReadyRead()
 
     DataBlock data;
     WSHeader* d = decodeFrame(data);
-    if (! d)
-	return ! m_buf.null();
+    if (! d) {
+	XDebug("websocket",DebugWarn,"socketReadyRead(): no frame decoded, readsize=%d, m_buf.null()=%s", readsize, String::boolText(m_buf.null()));
+	return true;
+    }
 
     switch (d->opcode()) {
     case WSHeader::Text:
@@ -593,8 +595,10 @@ void WebSocketServer::run()
 		else if (m_ping && delay >= m_ping && !m_dc->closed())
 		    m_dc->sendControlFrame(WSHeader::Ping, DataBlock());
 	    }
-	    if (! m_ds->socketReadyRead())
+	    if (! m_ds->socketReadyRead()) {
+		XDebug("websocket",DebugWarn,"m_ds->socketReadyRead() returned false, bailing out (fd %d)",m_socket->handle());
 		break;
+	    }
 	}
 	else if (!m_socket->canRetry()) {
 	    Debug("websocket",DebugWarn,"socket select error %d on %d",errno,m_socket->handle());
