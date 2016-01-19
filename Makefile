@@ -6,7 +6,7 @@ TESTS   := $(patsubst %.cpp,%.yate, $(TESTS_S))
 
 YATEDIR?=../yate3.git
 ifneq ($(wildcard ${YATEDIR}),)
-	MOREFLAGS=-I${YATEDIR} -L${YATEDIR}
+	MOREFLAGS=-I${YATEDIR} -I${YATEDIR}/libs/yscript -L${YATEDIR}
 	DPKGBPFLAGS=-d
 	PATH := ${YATEDIR}:$(PATH)
 endif
@@ -28,6 +28,12 @@ install: $(MODULES) $(CONFIGS) $(TESTS)
 	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(SHAREDIR); done
 	for m in $(CONFIGS); do install -m755 $$m $(DESTDIR)$(CONFDIR); done
 	for m in $(TESTS); do install -m755 $$m $(DESTDIR)$(SHAREDIR)/test; done
+
+ifneq ($(wildcard ${YATEDIR}),)
+.PHONY: put
+put: $(MODULES)
+	for m in $(MODULES); do install -m755 $$m ${YATEDIR}; done
+endif
 
 debug:
 	$(MAKE) all DEBUG=-g3 MODSTRIP=
