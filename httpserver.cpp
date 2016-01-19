@@ -324,10 +324,12 @@ YHttpMessage::YHttpMessage()
     , m_httpVersion("1.0")
     , m_bodyStream(NULL)
 {
+    XDebug(DebugAll,"YHttpMessage[%p]::YHttpMessage()",this);
 }
 
 YHttpMessage::~YHttpMessage()
 {
+    XDebug(DebugAll,"YHttpMessage[%p]::~YHttpMessage()",this);
 }
 
 void YHttpMessage::connection(Connection* conn)
@@ -832,6 +834,7 @@ bool Connection::received(unsigned long rlen)
 	    XDebug("HTTPServer",DebugAll,"Connection[%p] got http.upgrade Runnable response %p", this, code);
 	    if (code) {
 		m_rsp = new YHttpResponse(this);
+		m_rsp->deref();
 		m_rsp->httpVersion(m_req->httpVersion());
 		m_rsp->update(m);
 		m_rsp->addHeader("Connection", "Upgrade");
@@ -879,6 +882,7 @@ bool Connection::received(unsigned long rlen)
 	return false; // error response is already sent in readRequestBody()
 
     m_rsp = new YHttpResponse(this);
+    m_rsp->deref();
     m_rsp->httpVersion(m_req->httpVersion());
 
     // Dispatch http.request
@@ -932,6 +936,7 @@ bool Connection::received(unsigned long rlen)
     }
 
     // Request complete
+    XDebug(DebugAll, "RequestComplete, refcounts: req: %d, rsp: %d", m_req ? m_req->refcount() : 0, m_rsp ? m_rsp->refcount() : 0);
     m_req = NULL;
     m_rsp = NULL;
     return true;
