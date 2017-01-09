@@ -10,7 +10,7 @@ ifneq ($(wildcard ${YATEDIR}),)
 	DPKGBPFLAGS=-d
 	PATH := ${YATEDIR}:$(PATH)
 endif
-SHAREDIR := `yate-config --share`
+MODSDIR := `yate-config --modules`
 CONFDIR := `yate-config --config`
 
 .SUFFIXES: .yate
@@ -24,10 +24,10 @@ clean:
 	rm -f $(patsubst %.cpp,%.yate,$(wildcard *.cpp test/*.cpp))
 
 install: $(MODULES) $(CONFIGS) $(TESTS)
-	install -d $(DESTDIR)$(SHAREDIR) $(DESTDIR)$(CONFDIR) $(DESTDIR)$(SHAREDIR)/test
-	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(SHAREDIR); done
+	install -d $(DESTDIR)$(MODSDIR) $(DESTDIR)$(CONFDIR) $(DESTDIR)$(MODSDIR)/test
+	for m in $(MODULES); do install -m755 $$m $(DESTDIR)$(MODSDIR); done
 	for m in $(CONFIGS); do install -m755 $$m $(DESTDIR)$(CONFDIR); done
-	for m in $(TESTS); do install -m755 $$m $(DESTDIR)$(SHAREDIR)/test; done
+	for m in $(TESTS); do install -m755 $$m $(DESTDIR)$(MODSDIR)/test; done
 
 ifneq ($(wildcard ${YATEDIR}),)
 .PHONY: put
@@ -64,7 +64,7 @@ debian/control: Makefile $(SOURCES)
 		echo 'Architecture: any' >> $@; \
 		echo 'Depends: $${shlibs:Depends}, $${misc:Depends}' >> $@; \
 		echo "Description: $${DESCR}" >> $@; \
-		echo "debian/tmp$(SHAREDIR)/$$m.yate" > debian/$${PKG}.install; \
+		echo "debian/tmp$(MODSDIR)/$$m.yate" > debian/$${PKG}.install; \
 	done
 	for m in $(CONFIGS:.conf=); do \
 		PKG="yate-extra-$$m"; \
@@ -77,7 +77,7 @@ debian/control: Makefile $(SOURCES)
 	echo "Description: tests for extra modules" >> $@; \
 	echo "" > debian/yate-extra-tests.install; \
 	for m in $(TESTS_S:.cpp=); do \
-		echo "debian/tmp$(SHAREDIR)/$$m.yate" >> debian/yate-extra-tests.install; \
+		echo "debian/tmp$(MODSDIR)/$$m.yate" >> debian/yate-extra-tests.install; \
 	done
 
 sysvipc.yate: sysvipc.cpp
